@@ -1,59 +1,57 @@
-Here is the test on MNIST data.
 
-Round 7/10
+# MNIST Test Results
 
-Training set size: 671
+## Overview
+This document provides an overview of the training and testing process for the MNIST dataset. The dataset was split into a training set and a test set, with early stopping criteria applied to prevent overfitting.
 
-Test set size: 329
+## Dataset Information
+- **Training set size:** 671
+- **Test set size:** 329
 
-Saved epoch 6 data to training_data/mnist_test/epoch_6
+## Training Process
+The model was trained for multiple epochs, with data saved at each epoch. Training times and error rates for each epoch are detailed below:
 
-Saved epoch 0 data to training_data/mnist_test/epoch_0
+### Epoch Details
+- **Epoch 0:** Data saved to `training_data/mnist_test/epoch_0`
+- **Epoch 1:**
+  - **Training time:** 0.09 seconds
+  - **Train error rate:** 0.0075
+  - **Test accuracy:** 0.9787
+  - Data saved to `training_data/mnist_test/epoch_1`
+- **Epoch 2:**
+  - **Training time:** 0.10 seconds
+  - **Train error rate:** 0.0075
+  - **Test accuracy:** 0.9787
+  - Data saved to `training_data/mnist_test/epoch_2`
+- **Epoch 3:**
+  - **Training time:** 0.06 seconds
+  - **Train error rate:** 0.0075
+  - **Test accuracy:** 0.9787
+  - Data saved to `training_data/mnist_test/epoch_3`
+- **Epoch 4:**
+  - **Training time:** 0.07 seconds
+  - **Train error rate:** 0.0075
+  - **Test accuracy:** 0.9787
+  - Data saved to `training_data/mnist_test/epoch_4`
+- **Epoch 5:**
+  - **Training time:** 0.07 seconds
+  - **Train error rate:** 0.0075
+  - **Test accuracy:** 0.9787
+  - Data saved to `training_data/mnist_test/epoch_5`
+- **Epoch 6:** Data saved to `training_data/mnist_test/epoch_6`
 
-Training time for epoch 1 is: 0.09 seconds
+### Early Stopping
+No significant improvement was observed for 5 epochs, leading to early stopping. The model components were saved to `Model/BestHistogram_mnist_test_components.pkl`.
 
-Epoch 1: Train error rate = 0.0075, Test accuracy = 0.9787
+## Classification Analysis
 
-Saved epoch 1 data to training_data/mnist_test/epoch_1
+### Overall Metrics
+- **Total samples:** 329
+- **Correctly classified:** 322
+- **Incorrectly classified:** 7
+- **Raw accuracy:** 97.8723%
 
-Training time for epoch 2 is: 0.10 seconds
-
-Epoch 2: Train error rate = 0.0075, Test accuracy = 0.9787
-
-Saved epoch 2 data to training_data/mnist_test/epoch_2
-
-Training time for epoch 3 is: 0.06 seconds
-
-Epoch 3: Train error rate = 0.0075, Test accuracy = 0.9787
-
-Saved epoch 3 data to training_data/mnist_test/epoch_3
-
-Training time for epoch 4 is: 0.07 seconds
-
-Epoch 4: Train error rate = 0.0075, Test accuracy = 0.9787
-
-Saved epoch 4 data to training_data/mnist_test/epoch_4
-
-Training time for epoch 5 is: 0.07 seconds
-
-Epoch 5: Train error rate = 0.0075, Test accuracy = 0.9787
-
-No significant improvement for 5 epochs. Early stopping.
-
-Saved model components to Model/BestHistogram_mnist_test_components.pkl
-
-[DEBUG] ====== Starting preprocessing ======
-
-Verifying classification accuracy:
-
-Detailed Classification Analysis:
-Total samples: 329
-Correctly classified: 322
-Incorrectly classified: 7
-Raw accuracy: 97.8723%
-
-
-## Classification Results
+### Classification Results
 
 | Actual/Predicted | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | Accuracy |
 |-----------------|---|---|---|---|---|---|---|---|---|---|-----------|
@@ -70,22 +68,27 @@ Raw accuracy: 97.8723%
 
 **Overall Accuracy: 97.87%**
 
+### Class-wise Accuracies
+- **Class 0:** 1.0000 (37 samples)
+- **Class 1:** 0.9878
+### Detailed Analysis
+Detailed analysis saved to `classification_analysis_mnist_test.txt`.
 
-Detailed analysis saved to classification_analysis_mnist_test.txt
+### Full Dataset Metrics
+- **Total samples:** 329
+- **Overall accuracy:** 0.9787
 
-Full Dataset Metrics:
-Total samples: 329
-Overall accuracy: 0.9787
+### Class-wise Accuracies
+- **Class 0:** 1.0000 (37 samples)
+- **Class 1:** 0.9878 (82 samples)
+- **Class 2:** 0.9500 (20 samples)
+- **Class 3:** 0.9565 (23 samples)
+- **Class 4:** 1.0000 (37 samples)
+- **Class 5:** 0.9231 (13 samples)
+- **Class 6:** 1.0000 (38 samples)
+- **Class 7:** 0.9697 (33 samples)
+- **Class 8:** 0.9524 (21 samples)
+- **Class 9:** 0.9600 (25 samples)
 
-Class-wise accuracies:
-Class 0: 1.0000 (37 samples)
-Class 1: 0.9878 (82 samples)
-Class 2: 0.9500 (20 samples)
-Class 3: 0.9565 (23 samples)
-Class 4: 1.0000 (37 samples)
-Class 5: 0.9231 (13 samples)
-Class 6: 1.0000 (38 samples)
-Class 7: 0.9697 (33 samples)
-Class 8: 0.9524 (21 samples)
-Class 9: 0.9600 (25 samples)
-
+## Conclusion
+The model achieved an overall accuracy of 97.87% on the test set, with class-wise accuracies detailed above. The training process was efficient, with early stopping preventing overfitting.
