@@ -1,6 +1,9 @@
 Here is the test on MNIST data.
+
 Round 7/10
+
 Training set size: 671
+
 Test set size: 329
 Saved epoch 6 data to training_data/mnist_test/epoch_6
 Saved epoch 0 data to training_data/mnist_test/epoch_0
