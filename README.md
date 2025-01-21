@@ -5,23 +5,41 @@ Round 7/10
 Training set size: 671
 
 Test set size: 329
+
 Saved epoch 6 data to training_data/mnist_test/epoch_6
+
 Saved epoch 0 data to training_data/mnist_test/epoch_0
+
 Training time for epoch 1 is: 0.09 seconds
+
 Epoch 1: Train error rate = 0.0075, Test accuracy = 0.9787
+
 Saved epoch 1 data to training_data/mnist_test/epoch_1
+
 Training time for epoch 2 is: 0.10 seconds
+
 Epoch 2: Train error rate = 0.0075, Test accuracy = 0.9787
+
 Saved epoch 2 data to training_data/mnist_test/epoch_2
+
 Training time for epoch 3 is: 0.06 seconds
+
 Epoch 3: Train error rate = 0.0075, Test accuracy = 0.9787
+
 Saved epoch 3 data to training_data/mnist_test/epoch_3
+
 Training time for epoch 4 is: 0.07 seconds
+
 Epoch 4: Train error rate = 0.0075, Test accuracy = 0.9787
+
 Saved epoch 4 data to training_data/mnist_test/epoch_4
+
 Training time for epoch 5 is: 0.07 seconds
+
 Epoch 5: Train error rate = 0.0075, Test accuracy = 0.9787
+
 No significant improvement for 5 epochs. Early stopping.
+
 Saved model components to Model/BestHistogram_mnist_test_components.pkl
 
 [DEBUG] ====== Starting preprocessing ======
