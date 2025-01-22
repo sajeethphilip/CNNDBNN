@@ -294,7 +294,7 @@ python Train_CDBNN.py --config config.json --cpu
 python Train_CDBNN.py --output-dir experiment1_results
 ```
 ## Example outcome of the run
-Round 10/10
+``` Round 10/10
 Training set size: 13293
 Test set size: 46707
 Saved epoch 9 data to training_data/mnist/epoch_9
@@ -378,7 +378,7 @@ No significant overall improvement. Adaptive patience: 5/5
 No improvement in accuracy after 5 rounds of adding samples.
 Best training accuracy achieved: 1.0000
 Best test accuracy achieved: 0.9994
-
+```
 
 # Technical Documentation: How Train_CDBNN.py Works
 
