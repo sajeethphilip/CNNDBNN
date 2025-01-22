@@ -2,7 +2,7 @@
 # MNIST Test Results
 ![image](https://github.com/user-attachments/assets/225ead75-7889-43e4-b809-701bf1fdb4fe)
 
-
+You will need  the adaptive_dbnn.py library to run this code.
 ## Overview
 This document provides an overview of the training and testing process for the MNIST dataset. The dataset was split into a training set and a test set, with early stopping criteria applied to prevent overfitting.
 
