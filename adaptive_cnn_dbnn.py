@@ -96,7 +96,42 @@ class CNNDBNN(GPUDBNN):
         feature_cols = [f'feature_{i}' for i in range(features_np.shape[1])]
         self.data = pd.DataFrame(features_np, columns=feature_cols)
         self.data['target'] = labels_np
+    def predict(self, feature_df: pd.DataFrame) -> np.ndarray:
+        """
+        Override prediction to handle features properly.
 
+        Args:
+            feature_df: DataFrame containing feature values
+
+        Returns:
+            numpy array of predictions
+        """
+        # Convert DataFrame columns to match expected format
+        X = feature_df.copy()
+
+        # Preprocess if needed (using parent class method)
+        if hasattr(self, '_preprocess_data'):
+            X = self._preprocess_data(X, is_training=False)
+
+        # Convert to tensor manually instead of using .to()
+        X_tensor = torch.FloatTensor(X.values).to(self.device)
+
+        # Get predictions
+        predictions = []
+
+        # Process in batches to handle memory efficiently
+        batch_size = 128  # Adjust based on available memory
+        for i in range(0, len(X), batch_size):
+            batch = X_tensor[i:i + batch_size]
+            if modelType == "Histogram":
+                posteriors, _ = self._compute_batch_posterior(batch)
+            else:  # Gaussian model
+                posteriors, _ = self._compute_batch_posterior_std(batch)
+
+            batch_preds = torch.argmax(posteriors, dim=1)
+            predictions.extend(batch_preds.cpu().numpy())
+
+        return np.array(predictions)
 def setup_dbnn_environment(device: str, learning_rate: float):
     """Setup global environment for DBNN."""
     import os
@@ -245,11 +280,18 @@ class AdaptiveCNNDBNN:
 
     def predict(self, images: torch.Tensor) -> torch.Tensor:
         """End-to-end prediction."""
-        features = self.extract_features(images)
+        # Extract features
+        self.feature_extractor.eval()
+        with torch.no_grad():
+            features = self.feature_extractor(images)
+
+        # Convert features to DataFrame for DBNN
         feature_df = pd.DataFrame(
             features.cpu().numpy(),
             columns=[f'feature_{i}' for i in range(self.feature_dims)]
         )
+
+        # Get predictions from DBNN
         predictions = self.classifier.predict(feature_df)
         return torch.tensor(predictions, device=self.device)
 
