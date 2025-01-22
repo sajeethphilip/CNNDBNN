@@ -293,3 +293,251 @@ python Train_CDBNN.py --config config.json --cpu
 ```bash
 python Train_CDBNN.py --output-dir experiment1_results
 ```
+
+
+# Technical Documentation: How Train_CDBNN.py Works
+
+## Architecture Overview
+
+The training system consists of three main components:
+
+1. **CNN Feature Extractor**: Extracts meaningful features from input images
+2. **DBNN Classifier**: Performs classification using extracted features
+3. **Training Pipeline**: Coordinates the training of both components
+
+### Component Details
+
+#### 1. CNN Feature Extractor (FeatureExtractorCNN)
+
+```
+Input Image → Conv Layers → Feature Vector → Batch Normalization → Output Features
+```
+
+- **Architecture**:
+  - Input layer accepting `in_channels` (1 for grayscale, 3 for RGB)
+  - 3 convolutional blocks:
+    - Conv2d layer with increasing channels (32 → 64 → 128)
+    - BatchNorm2d for stability
+    - ReLU activation
+    - MaxPool2d for dimension reduction
+  - Final adaptive average pooling
+  - Fully connected layer to `feature_dims` dimensions
+  - BatchNorm1d for output normalization
+
+#### 2. DBNN Classifier (CNNDBNN)
+
+Inherits from GPUDBNN and customizes it for CNN feature processing:
+
+- **Key Modifications**:
+  - Custom dataset loading for feature vectors
+  - Feature pair generation for high-dimensional data
+  - Dynamic update mechanism for new features
+  - Memory-efficient processing using PyTorch tensors
+
+#### 3. Combined Model (AdaptiveCNNDBNN)
+
+Integrates both components with:
+- Triplet loss for feature extractor training
+- Feature transformation pipeline
+- DBNN training coordination
+- End-to-end inference
+
+## Data Flow
+
+### Training Phase
+
+1. **Data Preparation**:
+   ```
+   Raw Images → DataLoader → Batched Tensors
+   ```
+
+2. **Feature Extraction Training**:
+   ```
+   Images → CNN → Features → Triplet Loss → Backprop
+   ```
+
+3. **DBNN Training**:
+   ```
+   Extracted Features → Feature Pairs → DBNN → Adaptive Training
+   ```
+
+### Inference Phase
+
+```
+Input Image → CNN Features → DBNN → Class Prediction
+```
+
+## Training Process Details
+
+### 1. Feature Extractor Training
+
+a) **Triplet Generation**:
+   - Find positive pairs (same class)
+   - Find negative pairs (different class)
+   - Balance triplets for stable training
+
+b) **Loss Computation**:
+   ```python
+   loss = max(0, positive_distance - negative_distance + margin)
+   ```
+
+c) **Optimization**:
+   - Adam optimizer with a specified learning rate
+   - Batch-wise processing
+   - Validation using separate data split
+
+### 2. DBNN Training
+
+a) **Feature Preparation**:
+   - Extract features from all training images
+   - Convert to the appropriate format for DBNN
+   - Update DBNN internal representation
+
+b) **Adaptive Training**:
+   - Generate feature pairs
+   - Compute likelihoods
+   - Update weights based on errors
+   - Repeat until convergence
+
+## Configuration System
+
+The configuration follows a hierarchical structure:
+
+```json
+{
+    "dataset": {
+        // Dataset-specific parameters
+    },
+    "model": {
+        // Model architecture parameters
+    },
+    "training": {
+        // Training process parameters
+    }
+}
+```
+
+## Memory Management
+
+1. **Batch Processing**:
+   - Data loaded in batches
+   - GPU memory cleared after each batch
+   - Gradient accumulation when needed
+
+2. **Feature Storage**:
+   - Efficient tensor storage
+   - CPU offloading for large datasets
+   - Memory-mapped files for huge datasets
+
+## Error Handling
+
+1. **Initialization Errors**:
+   - Device compatibility checks
+   - Configuration validation
+   - Resource availability verification
+
+2. **Runtime Errors**:
+   - Batch size adjustments
+   - Memory overflow protection
+   - Gradient explosion prevention
+
+## Performance Optimization
+
+1. **Data Loading**:
+   - Parallel data loading
+   - Prefetching mechanism
+   - Memory pinning for GPU transfer
+
+2. **Computation**:
+   - Vectorized operations
+   - In-place operations where possible
+   - Efficient memory usage
+
+## Key Features
+
+1. **Adaptability**:
+   - Works with various image sizes
+   - Handles different numbers of classes
+   - Adjusts to data characteristics
+
+2. **Robustness**:
+   - Handles imbalanced datasets
+   - Manages noisy data
+   - Prevents overfitting
+
+3. **Monitoring**:
+   - Comprehensive logging
+   - Performance visualization
+   - Training progress tracking
+
+## Event Flow
+
+1. **Initialization**:
+   ```
+   Load Config → Setup Environment → Initialize Models → Prepare Data
+   ```
+
+2. **Training Loop**:
+   ```
+   Extract Features → Update DBNN → Evaluate → Save Progress
+   ```
+
+3. **Evaluation**:
+   ```
+   Load Test Data → Generate Predictions → Calculate Metrics → Save Results
+   ```
+
+## Extending the Code
+
+### Adding New Features
+
+1. **New Dataset Types**:
+   - Implement custom Dataset class
+   - Add data-loading logic
+   - Update configuration handler
+
+2. **Model Modifications**:
+   - Extend FeatureExtractorCNN
+   - Modify CNNDBNN if needed
+   - Update training pipeline
+
+### Configuration Changes
+
+1. **Add Parameters**:
+   - Update configuration schema
+   - Add validation logic
+   - Modify model initialization
+
+2. **Modify Training**:
+   - Adjust training loop
+   - Update loss functions
+   - Modify evaluation metrics
+
+## Troubleshooting Guide
+
+1. **Common Issues**:
+   - Memory errors: Reduce batch size
+   - Training instability: Adjust learning rate
+   - Poor performance: Check data preparation
+
+2. **Debug Process**:
+   - Enable detailed logging
+   - Monitor resource usage
+   - Check intermediate outputs
+
+## Best Practices
+
+1. **Code Organization**:
+   - Modular structure
+   - Clear separation of concerns
+   - Comprehensive documentation
+
+2. **Performance**:
+   - Batch size optimization
+   - Resource monitoring
+   - Regular cleanup
+
+3. **Maintenance**:
+   - Regular code reviews
+   - Performance profiling
+   - Update documentation
