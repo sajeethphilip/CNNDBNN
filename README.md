@@ -293,6 +293,91 @@ python Train_CDBNN.py --config config.json --cpu
 ```bash
 python Train_CDBNN.py --output-dir experiment1_results
 ```
+## Example outcome of the run
+Round 10/10
+Training set size: 13293
+Test set size: 46707
+Saved epoch 9 data to training_data/mnist/epoch_9
+Saved epoch 0 data to training_data/mnist/epoch_0
+Training time for epoch 1 is: 3.46 seconds
+Epoch 1: Train error rate = 0.0724, Test accuracy = 0.9997
+Saved epoch 1 data to training_data/mnist/epoch_1
+Training time for epoch 2 is: 3.25 seconds
+Epoch 2: Train error rate = 0.0722, Test accuracy = 0.9997
+Saved epoch 2 data to training_data/mnist/epoch_2
+Training time for epoch 3 is: 4.15 seconds
+Epoch 3: Train error rate = 0.0721, Test accuracy = 0.9997
+Saved epoch 3 data to training_data/mnist/epoch_3
+Training time for epoch 4 is: 3.28 seconds
+Epoch 4: Train error rate = 0.0720, Test accuracy = 0.9997
+Saved epoch 4 data to training_data/mnist/epoch_4
+Training time for epoch 5 is: 3.13 seconds
+Epoch 5: Train error rate = 0.0720, Test accuracy = 0.9997
+No significant improvement for 5 epochs. Early stopping.
+Saved model components to Model/BestHistogram_mnist_components.pkl
+
+[DEBUG] ====== Starting preprocessing ======
+
+Verifying classification accuracy:
+
+Detailed Classification Analysis:
+Total samples: 46,707
+Correctly classified: 46,692
+Incorrectly classified: 15
+Raw accuracy: 99.9679%
+
+
+Confusion Matrix and Class-wise Accuracy:
+Actual/Predicted0       1       2       3       4       5       6       7       8       9       Accuracy
+---------------------------------------------------------------------------------------------------------
+0              5139    0       0       0       0       0       2       0       0       0        99.96%
+1              0       5440    0       0       0       0       0       0       0       0       100.00%
+2              0       1       4714    0       0       0       0       0       0       0        99.98%
+3              0       0       0       4614    0       0       2       1       1       1        99.89%
+4              0       0       0       0       3868    0       0       0       0       1        99.97%
+5              2       0       0       1       0       3803    0       0       0       2        99.87%
+6              0       0       0       0       0       0       5558    0       0       0       100.00%
+7              0       0       0       0       0       0       0       5124    0       0       100.00%
+8              0       0       0       1       0       0       0       0       4237    0        99.98%
+9              0       0       0       0       0       0       0       0       0       4195    100.00%
+---------------------------------------------------------------------------------------------------------
+Overall Accuracy: 99.97%
+
+Detailed analysis saved to classification_analysis_mnist.txt
+
+Full Dataset Metrics:
+Total samples: 46707
+Overall accuracy: 0.9997
+
+Class-wise accuracies:
+Class 0: 0.9996 (5141 samples)
+Class 1: 1.0000 (5440 samples)
+Class 2: 0.9998 (4715 samples)
+Class 3: 0.9989 (4619 samples)
+Class 4: 0.9997 (3869 samples)
+Class 5: 0.9987 (3808 samples)
+Class 6: 1.0000 (5558 samples)
+Class 7: 1.0000 (5124 samples)
+Class 8: 0.9998 (4238 samples)
+Class 9: 1.0000 (4195 samples)
+
+Confidence Metrics:
+Confidence Check Summary:
+Total predictions: 46707
+Failed (true class prob <= 0.100 or not max prob): 16
+Passed (true class prob > 0.100 and is max prob): 46691
+
+Saved predictions with probabilities to round_9_predictions.csv
+Saved confusion matrix plot to round_9_predictions_confusion_matrix.png
+Saved probability distribution plots to round_9_predictions_probability_distributions.png
+
+Test Accuracy: 0.9997
+Saved model components to Model/BestHistogram_mnist_components.pkl
+Training accuracy: 0.9280
+No significant overall improvement. Adaptive patience: 5/5
+No improvement in accuracy after 5 rounds of adding samples.
+Best training accuracy achieved: 1.0000
+Best test accuracy achieved: 0.9994
 
 
 # Technical Documentation: How Train_CDBNN.py Works
