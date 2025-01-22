@@ -144,6 +144,10 @@ To train on your own dataset, you'll need:
    ```
 
 2. **Create a configuration file** (e.g., `config.json`):
+   ```
+     Note that we use the extension .json for the config file for the CNN (eg. mnist.json) and .conf for the dbnn (mnist.conf)
+     One is the image configuration, whereas the second is for the features.
+   ```
 
   ```json 
     {
