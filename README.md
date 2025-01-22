@@ -144,29 +144,35 @@ To train on your own dataset, you'll need:
    ```
 
 2. **Create a configuration file** (e.g., `config.json`):
-   ```json
-   {
-       "dataset": {
-           "name": "custom_dataset",
-           "type": "custom",
-           "in_channels": 3,
-           "num_classes": 2,
-           "input_size": [224, 224],
-           "mean": [0.485, 0.456, 0.406],
-           "std": [0.229, 0.224, 0.225],
-           "train_dir": "path/to/dataset_root/train",
-           "test_dir": "path/to/dataset_root/test"
-       },
-       "model": {
-           "feature_dims": 128,
-           "learning_rate": 0.001
-       },
-       "training": {
-           "batch_size": 32,
-           "epochs": 20,
-           "num_workers": 4
-       }
-   }
+
+  ```json 
+    {
+        "dataset": {
+            "name": "custom_dataset",
+            "type": "custom",
+            "in_channels": 3,
+            "num_classes": 2,
+            "input_size": [224, 224],
+            "mean": [0.485, 0.456, 0.406],
+            "std": [0.229, 0.224, 0.225],
+            "train_dir": "path/to/dataset_root/train",
+            "test_dir": "path/to/dataset_root/test"
+        },
+        "model": {
+            "feature_dims": 128,
+            "learning_rate": 0.001
+        },
+        "training": {
+            "batch_size": 32,
+            "epochs": 20,
+            "num_workers": 4
+        },
+        "execution_flags": {
+            "mode": "train_and_predict",  // Options: "train_and_predict", "train_only", "predict_only"
+            "use_previous_model": true,    // Whether to use previously trained model
+            "fresh_start": false          // Whether to start training from scratch
+        }
+    }
    ```
 
 3. **Run the training:**
