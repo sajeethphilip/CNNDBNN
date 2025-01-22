@@ -293,7 +293,7 @@ python Train_CDBNN.py --config config.json --cpu
 ```bash
 python Train_CDBNN.py --output-dir experiment1_results
 ```
-## Example outcome of the run
+## Example outcome on MNIST
 ``` Round 10/10
 Training set size: 13293
 Test set size: 46707
