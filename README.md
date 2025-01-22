@@ -325,23 +325,10 @@ Total samples: 46,707
 Correctly classified: 46,692
 Incorrectly classified: 15
 Raw accuracy: 99.9679%
+```
+![image](https://github.com/user-attachments/assets/65accc54-862f-4845-b3de-49923327571f)
 
-
-Confusion Matrix and Class-wise Accuracy:
-Actual/Predicted0       1       2       3       4       5       6       7       8       9       Accuracy
----------------------------------------------------------------------------------------------------------
-0              5139    0       0       0       0       0       2       0       0       0        99.96%
-1              0       5440    0       0       0       0       0       0       0       0       100.00%
-2              0       1       4714    0       0       0       0       0       0       0        99.98%
-3              0       0       0       4614    0       0       2       1       1       1        99.89%
-4              0       0       0       0       3868    0       0       0       0       1        99.97%
-5              2       0       0       1       0       3803    0       0       0       2        99.87%
-6              0       0       0       0       0       0       5558    0       0       0       100.00%
-7              0       0       0       0       0       0       0       5124    0       0       100.00%
-8              0       0       0       1       0       0       0       0       4237    0        99.98%
-9              0       0       0       0       0       0       0       0       0       4195    100.00%
----------------------------------------------------------------------------------------------------------
-Overall Accuracy: 99.97%
+```
 
 Detailed analysis saved to classification_analysis_mnist.txt
 
