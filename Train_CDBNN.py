@@ -118,6 +118,14 @@ class CNNDBNN(GPUDBNN):
     def __init__(self, dataset_name: str, feature_dims: int, device: str = 'cuda' if torch.cuda.is_available() else 'cpu'):
         """Initialize with CNN-specific parameters."""
         self.feature_dims = feature_dims
+        # Convert torch.device to string if needed
+        if isinstance(device, torch.device):
+            device = device.type
+
+        # Ensure dataset name matches the files created
+        if not os.path.exists(f"{dataset_name}.conf"):
+            raise FileNotFoundError(f"Configuration file {dataset_name}.conf not found")
+
         super().__init__(
             dataset_name=dataset_name,
             device=device
@@ -403,6 +411,11 @@ def prepare_mnist_data(config: Dict) -> None:
     logger = logging.getLogger(__name__)
     logger.info("Preparing MNIST dataset...")
 
+    # Generate consistent filenames
+    dataset_name = config['dataset']['name']
+    csv_file = f"{dataset_name}.csv"
+    conf_file = f"{dataset_name}.conf"
+
     # Download MNIST using torchvision
     transform = transforms.ToTensor()
     train_dataset = torchvision.datasets.MNIST(
@@ -428,13 +441,12 @@ def prepare_mnist_data(config: Dict) -> None:
     mnist_df = pd.concat(data_list, axis=0, ignore_index=True)
 
     # Save to CSV
-    mnist_file = f"{config['dataset']['name']}_test.csv"
-    mnist_df.to_csv(mnist_file, index=False)
-    logger.info(f"MNIST data saved to {mnist_file}")
+    mnist_df.to_csv(csv_file, index=False)
+    logger.info(f"MNIST data saved to {csv_file}")
 
     # Create MNIST config file
     mnist_config = {
-        'file_path': mnist_file,
+        'file_path': csv_file,
         'column_names': [f'feature_{i}' for i in range(784)] + ['target'],
         'target_column': 'target',
         'separator': ',',
@@ -455,9 +467,12 @@ def prepare_mnist_data(config: Dict) -> None:
         'modelType': 'Histogram'
     }
 
-    with open(f"{config['dataset']['name']}_test.conf", 'w') as f:
+    with open(conf_file, 'w') as f:
         json.dump(mnist_config, f, indent=4)
-    logger.info(f"MNIST configuration saved to {config['dataset']['name']}_test.conf")
+    logger.info(f"MNIST configuration saved to {conf_file}")
+
+    # Return paths for verification
+    return csv_file, conf_file
 
 def get_default_config() -> Dict:
     """Get default configuration for MNIST."""
@@ -483,7 +498,11 @@ def get_default_config() -> Dict:
     }
 
     # Prepare MNIST data and configuration
-    prepare_mnist_data(config)
+    csv_file, conf_file = prepare_mnist_data(config)
+
+    # Verify files were created
+    if not os.path.exists(csv_file) or not os.path.exists(conf_file):
+        raise RuntimeError(f"Failed to create required files: {csv_file}, {conf_file}")
 
     return config
 
@@ -593,7 +612,19 @@ def main(args):
         config = load_config(args.config)
     else:
         logger.info("No config provided, using default MNIST configuration")
-        config = get_default_config()
+        try:
+            config = get_default_config()
+        except Exception as e:
+            logger.error(f"Error creating default configuration: {str(e)}")
+            raise
+
+    # Verify dataset name is consistent
+    dataset_name = config['dataset']['name']
+    required_files = [f"{dataset_name}.csv", f"{dataset_name}.conf"]
+    for file in required_files:
+        if not os.path.exists(file):
+            logger.error(f"Required file {file} not found")
+            raise FileNotFoundError(f"Required file {file} not found")
 
     # Set device
     device = torch.device('cuda' if torch.cuda.is_available() and not args.cpu else 'cpu')
@@ -601,6 +632,20 @@ def main(args):
 
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
+
+    # Initialize model
+    try:
+        model = AdaptiveCNNDBNN(
+            dataset_name=dataset_name,
+            in_channels=config['dataset']['in_channels'],
+            feature_dims=config['model']['feature_dims'],
+            device=device,
+            learning_rate=config['model']['learning_rate']
+        )
+    except Exception as e:
+        logger.error(f"Error initializing model: {str(e)}")
+        raise
+
 
     # Check if dataset files exist
     if not os.path.exists(f"{config['dataset']['name']}_test.csv"):
