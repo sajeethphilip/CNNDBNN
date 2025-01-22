@@ -50,16 +50,58 @@ class FeatureExtractorCNN(nn.Module):
         x = self.batch_norm(x)
         return x
 
+# Common utilities to be used across all scripts
+def get_device_string(device) -> str:
+    """Convert any device representation to a consistent string format."""
+    if isinstance(device, torch.device):
+        return device.type
+    elif isinstance(device, str):
+        return device
+    else:
+        raise TypeError(f"Unsupported device type: {type(device)}")
+
 class CNNDBNN(GPUDBNN):
     """DBNN subclass specifically for handling CNN feature extraction outputs."""
+
 
     def __init__(self, dataset_name: str, feature_dims: int, device: str = 'cuda' if torch.cuda.is_available() else 'cpu'):
         """Initialize with CNN-specific parameters."""
         self.feature_dims = feature_dims
+        self.batch_size = 32  # Default batch size
+
+        # Set environment variables before parent initialization
+        device_str = get_device_string(device)
+        self._set_environment_vars(device)
+
         super().__init__(
             dataset_name=dataset_name,
             device=device
         )
+
+        # Store torch.device for tensor operations
+        self.device = torch.device(device_str)
+
+    def _set_environment_vars(self, device: str):
+        """Set required environment variables for DBNN."""
+        import os
+        env_vars = {
+            'Train_device': device,
+            'modelType': 'Histogram',
+            'cardinality_threshold': '0.9',
+            'cardinality_tolerance': '4',
+            'nokbd': 'True',
+            'EnableAdaptive': 'True',
+            'Train': 'True',
+            'Predict': 'True',
+            'LearningRate': '0.001',
+            'TestFraction': '0.2'
+        }
+        for key, value in env_vars.items():
+            os.environ[key] = str(value)
+            # Also set as global variable in adaptive_dbnn module
+            import adaptive_dbnn
+            setattr(adaptive_dbnn, key, value)
+
 
     def _load_dataset(self) -> pd.DataFrame:
         """Override dataset loading for CNN features."""
@@ -96,42 +138,57 @@ class CNNDBNN(GPUDBNN):
         feature_cols = [f'feature_{i}' for i in range(features_np.shape[1])]
         self.data = pd.DataFrame(features_np, columns=feature_cols)
         self.data['target'] = labels_np
-    def predict(self, feature_df: pd.DataFrame) -> np.ndarray:
+
+    def predict(self, data, batch_size: int = None) -> torch.Tensor:
         """
-        Override prediction to handle features properly.
+        Predict classes from features with proper data handling.
 
         Args:
-            feature_df: DataFrame containing feature values
+            data: Either torch.Tensor or pd.DataFrame containing features
+            batch_size: Optional batch size for processing
 
         Returns:
-            numpy array of predictions
+            torch.Tensor: Predicted class labels
         """
-        # Convert DataFrame columns to match expected format
-        X = feature_df.copy()
+        if batch_size is None:
+            batch_size = self.batch_size
 
-        # Preprocess if needed (using parent class method)
-        if hasattr(self, '_preprocess_data'):
-            X = self._preprocess_data(X, is_training=False)
+        # Convert input to appropriate format
+        if isinstance(data, torch.Tensor):
+            X_tensor = data.to(self.device)
+        elif isinstance(data, pd.DataFrame):
+            # Use parent class preprocessing if needed
+            X_processed = self._preprocess_data(data, is_training=False)
+            X_tensor = torch.FloatTensor(X_processed).to(self.device)
+        else:
+            raise TypeError(f"Unsupported input type: {type(data)}")
 
-        # Convert to tensor manually instead of using .to()
-        X_tensor = torch.FloatTensor(X.values).to(self.device)
-
-        # Get predictions
         predictions = []
 
-        # Process in batches to handle memory efficiently
-        batch_size = 128  # Adjust based on available memory
-        for i in range(0, len(X), batch_size):
+        # Process in batches
+        for i in range(0, len(X_tensor), batch_size):
             batch = X_tensor[i:i + batch_size]
-            if modelType == "Histogram":
+
+            # Compute posteriors based on model type
+            if hasattr(adaptive_dbnn, 'modelType') and adaptive_dbnn.modelType == "Histogram":
                 posteriors, _ = self._compute_batch_posterior(batch)
             else:  # Gaussian model
                 posteriors, _ = self._compute_batch_posterior_std(batch)
 
             batch_preds = torch.argmax(posteriors, dim=1)
-            predictions.extend(batch_preds.cpu().numpy())
+            predictions.append(batch_preds)
 
-        return np.array(predictions)
+        # Combine all predictions
+        predictions = torch.cat(predictions)
+        return predictions.to(self.device)
+
+
+    def _preprocess_data(self, X: pd.DataFrame, is_training: bool = True) -> torch.Tensor:
+        """Override preprocessing for CNN features."""
+        if isinstance(X, pd.DataFrame):
+            return torch.FloatTensor(X.values)
+        return X
+
 def setup_dbnn_environment(device: str, learning_rate: float):
     """Setup global environment for DBNN."""
     import os
@@ -278,6 +335,31 @@ class AdaptiveCNNDBNN:
             'dbnn_results': dbnn_results
         }
 
+
+    def predict_batch(self, dataloader: DataLoader) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Batch prediction for a full dataset.
+
+        Args:
+            dataloader: DataLoader containing the dataset
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: Predictions and true labels
+        """
+        all_predictions = []
+        all_labels = []
+
+        self.feature_extractor.eval()
+        with torch.no_grad():
+            for images, labels in dataloader:
+                images = images.to(self.device)
+                predictions = self.predict(images)
+
+                all_predictions.append(predictions.cpu())
+                all_labels.append(labels)
+
+        return torch.cat(all_predictions), torch.cat(all_labels)
+
     def predict(self, images: torch.Tensor) -> torch.Tensor:
         """End-to-end prediction."""
         # Extract features
@@ -291,9 +373,9 @@ class AdaptiveCNNDBNN:
             columns=[f'feature_{i}' for i in range(self.feature_dims)]
         )
 
-        # Get predictions from DBNN
-        predictions = self.classifier.predict(feature_df)
-        return torch.tensor(predictions, device=self.device)
+        # Get predictions using features tensor directly
+        predictions = self.classifier.predict(features)  # Pass tensor directly
+        return predictions
 
     def save_model(self, path: str):
         """Save model state."""

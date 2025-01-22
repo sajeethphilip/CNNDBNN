@@ -357,7 +357,7 @@ class AdaptiveCNNDBNN:
             features.cpu().numpy(),
             columns=[f'feature_{i}' for i in range(self.feature_dims)]
         )
-        predictions = self.classifier.predict(feature_df)
+        predictions = self.classifier.predict(features)
         return torch.tensor(predictions, device=self.device)
 
     def save_model(self, path: str):
@@ -642,6 +642,10 @@ def main(args):
             device=device,
             learning_rate=config['model']['learning_rate']
         )
+
+        # Set batch size for DBNN classifier
+        model.classifier.batch_size = config['training']['batch_size']
+
     except Exception as e:
         logger.error(f"Error initializing model: {str(e)}")
         raise
