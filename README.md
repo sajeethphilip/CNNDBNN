@@ -4,7 +4,7 @@
 
 You will need  the adaptive_dbnn.py library to run this code.
 ## Overview
-This document provides an overview of the training and testing process for the MNIST dataset. The dataset was split into a training set and a test set, with early stopping criteria applied to prevent overfitting.
+This document provides an overview of the training and testing process for the MNIST dataset. The dataset was split into training and test sets, with early stopping criteria applied to prevent overfitting. The result below was obtained on a DELL i7 laptop with 8Gb RAM.
 
 ## Dataset Information
 - **Training set size:** 671
