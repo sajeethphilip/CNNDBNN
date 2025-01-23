@@ -152,8 +152,8 @@ To train on your own dataset, you'll need:
   ```json 
     {
         "dataset": {
-            "name": "custom_dataset",
-            "type": "custom",
+            "name": "custom_dataset",  
+            "type": "custom",           // or "torchvision" if it is part of the data
             "in_channels": 3,
             "num_classes": 2,
             "input_size": [224, 224],
@@ -170,7 +170,13 @@ To train on your own dataset, you'll need:
             "batch_size": 32,
             "epochs": 20,
             "num_workers": 4
-        },
+        "cnn_training": {
+            "resume": true,              // Whether to resume from previous state
+            "fresh_start": false,        // Whether to start training from scratch
+            "min_loss_threshold": 0.01,  // Skip training if loss is below this
+            "checkpoint_dir": "Model/cnn_checkpoints"  // Directory for checkpoints
+        }
+    },
         "execution_flags": {
             "mode": "train_and_predict",  // Options: "train_and_predict", "train_only", "predict_only"
             "use_previous_model": true,    // Whether to use previously trained model
