@@ -25,6 +25,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from adaptive_cnn_dbnn import AdaptiveCNNDBNN, setup_dbnn_environment, FeatureExtractorCNN, CNNDBNN
+from torch.utils.data import ConcatDataset, Dataset, DataLoader
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,6 +33,40 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+class CombinedDataset(Dataset):
+    def __init__(self, train_dataset, test_dataset):
+        self.combined_data = ConcatDataset([train_dataset, test_dataset])
+
+    def __len__(self):
+        return len(self.combined_data)
+
+    def __getitem__(self, idx):
+        return self.combined_data[idx]
+
+def get_dataset(config: Dict, transform, use_cpu: bool = False):
+    dataset_config = config['dataset']
+
+    if dataset_config['type'] == 'torchvision':
+        train_dataset = getattr(torchvision.datasets, dataset_config['name'].upper())(
+            root='./data', train=True, download=True, transform=transform
+        )
+        test_dataset = getattr(torchvision.datasets, dataset_config['name'].upper())(
+            root='./data', train=False, download=True, transform=transform
+        )
+        return CombinedDataset(train_dataset, test_dataset), None
+
+    elif dataset_config['type'] == 'custom':
+        train_dataset = CustomImageDataset(
+            data_dir=dataset_config['train_dir'],
+            transform=transform
+        )
+        test_dataset = CustomImageDataset(
+            data_dir=dataset_config['test_dir'],
+            transform=transform
+        )
+        return CombinedDataset(train_dataset, test_dataset), None
+
+    raise ValueError(f"Unknown dataset type: {dataset_config['type']}")
 
 class CustomImageDataset(Dataset):
     def __init__(self, data_dir: str, transform=None, csv_file: Optional[str] = None):
@@ -265,8 +300,17 @@ class AdaptiveCNNDBNN:
             """Train both CNN feature extractor and DBNN classifier."""
 
             # First train the CNN feature extractor
-            cnn_history = self.train_feature_extractor(train_loader, val_loader, cnn_epochs)
+            cnn_config = self.config['training'].get('cnn_training', {})
 
+            epochs = self.config['training'].get('epochs', 10)
+            cnn_history = self.train_feature_extractor(
+                train_loader,
+                val_loader,
+                epochs=epochs,
+                min_loss=cnn_config.get('min_loss_threshold', 0.01),
+                save_best=cnn_config.get('save_best_only', True),
+                checkpoint_dir=cnn_config.get('checkpoint_dir', 'Model/cnn_checkpoints')
+            )
             # Extract features using trained CNN
             logger.info("Extracting features for DBNN...")
             train_features = []
@@ -327,12 +371,13 @@ class AdaptiveCNNDBNN:
     def train_feature_extractor(self,
                              train_loader: DataLoader,
                              val_loader: Optional[DataLoader] = None,
-                             epochs: int = 10) -> Dict[str, List[float]]:
+                             epochs: int = 10,
+                             min_loss: float = 0.01,
+                             save_best: bool = True,
+                             checkpoint_dir: str = 'Model/cnn_checkpoints') -> Dict[str, List[float]]:
         self.feature_extractor.train()
         history = {'train_loss': [], 'val_loss': []}
-        criterion = nn.TripletMarginLoss(margin=0.2)
-
-        min_loss = self.config.get('training', {}).get('cnn_training', {}).get('min_loss_threshold', 0.01)
+        criterion = nn.TripletMarginLoss()
 
         for epoch in range(epochs):
             self.current_epoch = epoch
@@ -347,7 +392,6 @@ class AdaptiveCNNDBNN:
                 features = self.feature_extractor(images)
 
                 anchors, positives, negatives = self._get_triplet_samples(features, labels)
-
                 if anchors is not None:
                     loss = criterion(anchors, positives, negatives)
                     loss.backward()
@@ -355,20 +399,17 @@ class AdaptiveCNNDBNN:
                     epoch_loss += loss.item()
                     valid_batches += 1
 
-            if valid_batches > 0:
-                avg_loss = epoch_loss / valid_batches
-                history['train_loss'].append(avg_loss)
+                if valid_batches > 0:
+                    avg_loss = epoch_loss / valid_batches
+                    history['train_loss'].append(avg_loss)
 
-                if avg_loss < min_loss:
-                    logger.info(f"Loss {avg_loss:.4f} below threshold {min_loss}. Early stopping.")
-                    break
+                    if avg_loss < min_loss:
+                        logger.info(f"Loss {avg_loss:.4f} below threshold {min_loss}. Early stopping.")
+                        break
 
-                if val_loader is not None:
-                    val_loss = self._validate_feature_extractor(val_loader, criterion)
-                    history['val_loss'].append(val_loss)
-                    logger.info(f'Epoch {epoch + 1}: Train Loss = {avg_loss:.4f}, Val Loss = {val_loss:.4f}')
-                else:
-                    logger.info(f'Epoch {epoch + 1}: Train Loss = {avg_loss:.4f}')
+            if save_best:
+                os.makedirs(checkpoint_dir, exist_ok=True)
+                self._save_checkpoint(checkpoint_dir, is_best=True)
 
         return history
 
@@ -488,51 +529,94 @@ def setup_logging(log_dir='logs'):
 def prepare_custom_data(config: Dict, use_cpu: bool = False) -> Tuple[str, str]:
     logger.info("Preparing custom dataset...")
     dataset_name = config['dataset']['name'].lower()
-    csv_file = f"{dataset_name}.csv"
-    conf_file = f"{dataset_name}.conf"
 
-    transform = get_transforms(config)
-    train_dataset = CustomImageDataset(
-        data_dir=config['dataset']['train_dir'],
-        transform=transform,
-        csv_file=config['dataset'].get('train_csv')
-    )
-
+    # Set up devices and mixed precision if enabled
     compute_device = torch.device('cuda' if torch.cuda.is_available() and not use_cpu else 'cpu')
     storage_device = torch.device('cpu')
+    scaler = torch.cuda.amp.GradScaler() if config['execution_flags'].get('mixed_precision') else None
 
+    # Load datasets with appropriate transforms
+    train_transform = get_transforms(config, is_train=True)
+    train_dataset = CustomImageDataset(
+        data_dir=config['dataset']['train_dir'],
+        transform=train_transform
+    )
+
+    # Setup training components
     feature_extractor = FeatureExtractorCNN(
         in_channels=config['dataset']['in_channels'],
         feature_dims=config['model']['feature_dims']
     ).to(compute_device)
 
+    # Optimizer setup
+    optimizer_config = config['model']['optimizer']
+    optimizer_params = {
+        'lr': config['model']['learning_rate'],
+        'weight_decay': optimizer_config.get('weight_decay', 0)
+    }
+
+    # Add momentum only for SGD
+    if optimizer_config['type'] == 'SGD' and 'momentum' in optimizer_config:
+        optimizer_params['momentum'] = optimizer_config['momentum']
+
+    optimizer_class = getattr(optim, optimizer_config['type'])
+    optimizer = optimizer_class(feature_extractor.parameters(), **optimizer_params)
+
+    # Scheduler setup
+    scheduler_config = config['model']['scheduler']
+    scheduler_class = getattr(optim.lr_scheduler, scheduler_config['type'])
+    scheduler = scheduler_class(
+        optimizer,
+        step_size=scheduler_config['step_size'],
+        gamma=scheduler_config['gamma']
+    )
+
+    # Training loop with early stopping
+    best_loss = float('inf')
+    patience_counter = 0
+    early_stopping_config = config['training'].get('early_stopping', {})
+    patience = early_stopping_config.get('patience', 5)
+    min_delta = early_stopping_config.get('min_delta', 0.001)
+
     train_loader = DataLoader(
         train_dataset,
-        batch_size=len(train_dataset),
+        batch_size=config['training']['batch_size'],
+        shuffle=True,
+        num_workers=config['training']['num_workers'],
         pin_memory=not use_cpu
     )
 
+    # Extract features
+    logger.info("Extracting features...")
+    feature_extractor.eval()
     features = []
     labels = []
-    feature_extractor.eval()
+
     with torch.no_grad():
-        for images, batch_labels in tqdm(train_loader, desc="Extracting features"):
+        for images, batch_labels in tqdm(train_loader, desc="Feature extraction"):
             images = images.to(compute_device)
-            batch_features = feature_extractor(images)
+            if config['execution_flags'].get('mixed_precision'):
+                with torch.cuda.amp.autocast():
+                    batch_features = feature_extractor(images)
+            else:
+                batch_features = feature_extractor(images)
             features.append(batch_features.to(storage_device).numpy())
             labels.append(batch_labels.numpy())
 
     features = np.concatenate(features, axis=0)
     labels = np.concatenate(labels, axis=0)
 
+    # Save features and config
+    csv_path = f"{dataset_name}.csv"
+    conf_path = f"{dataset_name}.conf"
+
     feature_cols = {f'feature_{i}': features[:, i] for i in range(features.shape[1])}
     feature_cols['target'] = labels
     df = pd.DataFrame(feature_cols)
-    df.to_csv(csv_file, index=False)
-    logger.info(f"Features saved to {csv_file}")
+    df.to_csv(csv_path, index=False)
 
     custom_config = {
-        'file_path': csv_file,
+        'file_path': csv_path,
         'column_names': [f'feature_{i}' for i in range(features.shape[1])] + ['target'],
         'target_column': 'target',
         'separator': ',',
@@ -544,9 +628,10 @@ def prepare_custom_data(config: Dict, use_cpu: bool = False) -> Tuple[str, str]:
         }
     }
 
-    with open(conf_file, 'w') as f:
+    with open(conf_path, 'w') as f:
         json.dump(custom_config, f, indent=4)
-    return csv_file, conf_file
+
+    return csv_path, conf_path
 
 def prepare_mnist_data(config: Dict) -> None:
     """
@@ -664,56 +749,41 @@ def load_config(config_path: str) -> Dict:
 
     return config
 
-def get_transforms(config: Dict):
-    """Get transforms based on configuration."""
-    transform_list = [transforms.ToTensor()]
+def get_transforms(config: Dict, is_train: bool = True):
+    transform_list = []
+
+    aug_config = config['augmentation']['train' if is_train else 'test']
+
+    # Resize first
+    if 'input_size' in config['dataset']:
+        transform_list.append(transforms.Resize(config['dataset']['input_size']))
+
+    # Training augmentations
+    if is_train:
+        if aug_config.get('horizontal_flip', False):
+            transform_list.append(transforms.RandomHorizontalFlip())
+        if aug_config.get('vertical_flip', False):
+            transform_list.append(transforms.RandomVerticalFlip())
+        if aug_config.get('random_rotation'):
+            transform_list.append(transforms.RandomRotation(aug_config['random_rotation']))
+        if aug_config.get('random_crop'):
+            transform_list.append(transforms.RandomCrop(aug_config['crop_size']))
+        if 'color_jitter' in aug_config:
+            transform_list.append(transforms.ColorJitter(**aug_config['color_jitter']))
+    else:
+        # Test transforms
+        if aug_config.get('center_crop'):
+            transform_list.append(transforms.CenterCrop(aug_config['crop_size']))
+
+    transform_list.append(transforms.ToTensor())
 
     if 'mean' in config['dataset'] and 'std' in config['dataset']:
-        transform_list.append(
-            transforms.Normalize(config['dataset']['mean'], config['dataset']['std'])
-        )
-
-    if 'input_size' in config['dataset']:
-        transform_list.insert(0, transforms.Resize(config['dataset']['input_size']))
+        transform_list.append(transforms.Normalize(config['dataset']['mean'],
+                                                config['dataset']['std']))
 
     return transforms.Compose(transform_list)
 
-def get_dataset(config: Dict, transform, use_cpu: bool = False):
-    dataset_config = config['dataset']
 
-    if dataset_config['type'] == 'torchvision':
-        if dataset_config['name'] == 'mnist':
-            train_dataset = torchvision.datasets.MNIST(
-                root='./data', train=True, download=True, transform=transform
-            )
-            test_dataset = torchvision.datasets.MNIST(
-                root='./data', train=False, download=True, transform=transform
-            )
-        else:
-            fln = dataset_config['name'].upper()
-            DatasetClass = getattr(torchvision.datasets, fln)
-            train_dataset = DatasetClass(
-                root='./data', train=True, download=True, transform=transform
-            )
-            test_dataset = DatasetClass(
-                root='./data', train=False, download=True, transform=transform
-            )
-    elif dataset_config['type'] == 'custom':
-        prepare_custom_data(config, use_cpu)
-        train_dataset = CustomImageDataset(
-            data_dir=dataset_config['train_dir'],
-            transform=transform,
-            csv_file=dataset_config.get('train_csv')
-        )
-        test_dataset = CustomImageDataset(
-            data_dir=dataset_config['test_dir'],
-            transform=transform,
-            csv_file=dataset_config.get('test_csv')
-        )
-    else:
-        raise ValueError(f"Unknown dataset type: {dataset_config['type']}")
-
-    return train_dataset, test_dataset
 
 def plot_training_history(history: Dict, save_path: Optional[str] = None):
     """Plot training history."""
@@ -769,6 +839,8 @@ def main(args):
 
     transform = get_transforms(config)
     train_dataset, test_dataset = get_dataset(config, transform, args.cpu)
+
+    combined_dataset, _ = get_dataset(config, transform, args.cpu)
 
     train_loader = DataLoader(
         train_dataset,
