@@ -626,6 +626,252 @@ The configuration follows a hierarchical structure:
    - Resource monitoring
    - Regular cleanup
 
+# CNN-DBNN User Manual
+
+## 1. Installation and Setup
+
+### Prerequisites
+- Python 3.8+
+- PyTorch 1.8+
+- CUDA toolkit (for GPU support)
+- Required packages: numpy, pandas, tqdm, PIL, scikit-learn
+
+### Installation Steps
+```bash
+pip install torch torchvision
+pip install numpy pandas tqdm Pillow scikit-learn
+```
+
+## 2. Command Line Interface
+
+### Basic Usage
+```bash
+python CDBNN_train.py --config path/to/config.json --cpu
+```
+
+### Arguments
+- `--config`: (Required) Path to JSON configuration file
+- `--cpu`: (Optional) Force CPU usage even if GPU is available
+- `--output-dir`: (Optional) Output directory for results (default: training_results)
+
+## 3. Configuration File Structure
+
+### Dataset Configuration
+```json
+"dataset": {
+    "name": "E11dash",          // Dataset identifier
+    "type": "custom",           // Options: "custom" or "torchvision"
+    "in_channels": 3,           // 1 for grayscale, 3 for RGB
+    "num_classes": 2,           // Number of classification categories
+    "input_size": [64, 64],     // Target image dimensions
+    "mean": [0.485, 0.456, 0.406], // Per-channel normalization means
+    "std": [0.229, 0.224, 0.225],  // Per-channel normalization std
+    "train_dir": "data/E11dash/train", // Training data path
+    "test_dir": "data/E11dash/test"    // Test data path
+}
+```
+
+#### Important Notes:
+- For custom datasets, images must be organized in class-specific subdirectories
+- Supported image formats: JPG, PNG, JPEG
+- mean/std values should be calculated from your dataset or use ImageNet defaults
+
+### Model Architecture
+```json
+"model": {
+    "architecture": "CNN",
+    "feature_dims": 128,        // Output feature dimension
+    "learning_rate": 0.001,
+    "optimizer": {
+        "type": "Adam",         // Options: "Adam", "SGD"
+        "weight_decay": 0.0001, // L2 regularization
+        "momentum": 0.9         // Only for SGD
+    },
+    "scheduler": {
+        "type": "StepLR",      // Learning rate scheduler
+        "step_size": 7,        // Epochs before adjustment
+        "gamma": 0.1           // Multiplicative factor
+    }
+}
+```
+
+#### Optimizer Options:
+- Adam: Best for most cases, supports weight_decay
+- SGD: Traditional approach, supports momentum and weight_decay
+
+### Training Configuration
+```json
+"training": {
+    "batch_size": 32,          // Training batch size
+    "epochs": 20,              // Maximum training epochs
+    "num_workers": 4,          // DataLoader workers
+    "early_stopping": {
+        "patience": 5,         // Epochs to wait before stopping
+        "min_delta": 0.001     // Minimum improvement threshold
+    },
+    "cnn_training": {
+        "resume": true,        // Resume from checkpoint
+        "fresh_start": false,  // Ignore existing checkpoints
+        "min_loss_threshold": 0.01,  // Early stopping threshold
+        "checkpoint_dir": "Model/cnn_checkpoints",
+        "save_best_only": true,      // Save only best model
+        "validation_split": 0.2       // Validation set size
+    }
+}
+```
+
+### Data Augmentation
+```json
+"augmentation": {
+    "train": {
+        "horizontal_flip": true,    // Random horizontal flip
+        "vertical_flip": false,     // Random vertical flip
+        "random_rotation": 15,      // Max rotation degrees
+        "random_crop": true,        // Enable random cropping
+        "crop_size": [256, 256],    // Crop dimensions
+        "color_jitter": {           // Color augmentation
+            "brightness": 0.2,       // Brightness adjustment
+            "contrast": 0.2,         // Contrast adjustment
+            "saturation": 0.2,       // Saturation adjustment
+            "hue": 0.1              // Hue adjustment
+        }
+    },
+    "test": {
+        "center_crop": true,        // Center crop test images
+        "crop_size": [256, 256]     // Test crop dimensions
+    }
+}
+```
+
+### Execution Flags
+```json
+"execution_flags": {
+    "mode": "train_and_predict",  // Execution mode
+    "use_previous_model": true,   // Load existing model
+    "fresh_start": false,         // Ignore previous training
+    "use_gpu": true,             // Enable GPU usage
+    "mixed_precision": true,      // Enable AMP training
+    "distributed_training": false, // Multi-GPU training
+    "debug_mode": false          // Enable debug logging
+}
+```
+
+## 4. Directory Structure
+
+### Input Directory Structure
+```
+data/
+└── dataset_name/
+    ├── train/
+    │   ├── class1/
+    │   │   ├── image1.jpg
+    │   │   └── image2.jpg
+    │   └── class2/
+    │       ├── image3.jpg
+    │       └── image4.jpg
+    └── test/
+        ├── class1/
+        │   └── test1.jpg
+        └── class2/
+            └── test2.jpg
+```
+
+### Output Directory Structure
+```
+project_root/
+├── Model/
+│   └── cnn_checkpoints/
+│       ├── best_model.pth
+│       └── latest_checkpoint.pth
+├── logs/
+│   └── training_YYYYMMDD_HHMMSS.log
+├── dataset_name.csv      # Extracted features
+├── dataset_name.conf     # DBNN configuration
+└── training_results/
+    ├── confusion_matrix.png
+    └── training_history.json
+```
+
+## 5. Output Files
+
+### Feature CSV Format
+- Contains extracted CNN features and labels
+- Each row represents one image
+- Columns: feature_0 to feature_N, target
+
+### DBNN Configuration
+- Automatically generated based on extracted features
+- Contains feature mapping and DBNN parameters
+- Used for subsequent DBNN training
+
+### Log Files
+- Training progress and metrics
+- Error messages and warnings
+- System information and configuration
+
+### Checkpoints
+- Model state dictionaries
+- Optimizer states
+- Training history
+- Configuration parameters
+
+## 6. Best Practices
+
+### Data Preparation
+1. Ensure balanced class distribution
+2. Pre-process images to similar dimensions
+3. Calculate dataset-specific mean/std values
+4. Verify image format compatibility
+
+### Training Configuration
+1. Start with default hyperparameters
+2. Adjust batch_size based on GPU memory
+3. Enable mixed_precision for faster training
+4. Use early_stopping to prevent overfitting
+
+### Resource Management
+1. Set num_workers based on CPU cores
+2. Monitor GPU memory usage
+3. Use appropriate batch_size for hardware
+4. Enable mixed_precision for large datasets
+
+### Model Checkpointing
+1. Enable save_best_only for disk space
+2. Set appropriate checkpoint frequency
+3. Use a resume for interrupted training
+4. Backup important checkpoints
+
+## 7. Troubleshooting
+
+### Common Issues
+1. GPU Out of Memory
+   - Reduce batch_size
+   - Enable mixed_precision
+   - Decrease image dimensions
+
+2. Slow Training
+   - Increase num_workers
+   - Enable mixed_precision
+   - Optimize data loading
+
+3. Poor Convergence
+   - Adjust learning_rate
+   - Modify augmentation settings
+   - Check the class balance
+   - Increase training epochs
+
+4. File Not Found Errors
+   - Verify directory structure
+   - Check file permissions
+   - Validate path configurations
+
+### Debug Mode
+Enable debug_mode in execution_flags for:
+- Detailed logging
+- Memory tracking
+- Performance profiling
+- Error tracing
+
 3. **Maintenance**:
    - Regular code reviews
    - Performance profiling
