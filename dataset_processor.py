@@ -143,13 +143,73 @@ class DatasetProcessor:
                 "train_dir": train_dir,
                 "test_dir": test_dir
             },
-            # Rest of the JSON structure remains the same
+            "model": {
+                "architecture": "CNN",
+                "feature_dims": 128,
+                "learning_rate": 0.001,
+                "optimizer": {
+                    "type": "Adam",
+                    "weight_decay": 1e-4,
+                    "momentum": 0.9
+                },
+                "scheduler": {
+                    "type": "StepLR",
+                    "step_size": 7,
+                    "gamma": 0.1
+                }
+            },
+            "training": {
+                "batch_size": 32,
+                "epochs": 20,
+                "num_workers": 4,
+                "early_stopping": {
+                    "patience": 5,
+                    "min_delta": 0.001
+                },
+                "cnn_training": {
+                    "resume": True,
+                    "fresh_start": False,
+                    "min_loss_threshold": 0.01,
+                    "checkpoint_dir": "Model/cnn_checkpoints",
+                    "save_best_only": True,
+                    "validation_split": 0.2
+                }
+            },
+            "augmentation": {
+                "train": {
+                    "horizontal_flip": True,
+                    "vertical_flip": False,
+                    "random_rotation": 15,
+                    "random_crop": True,
+                    "crop_size": list(most_common_size),
+                    "color_jitter": {
+                        "brightness": 0.2,
+                        "contrast": 0.2,
+                        "saturation": 0.2,
+                        "hue": 0.1
+                    }
+                },
+                "test": {
+                    "center_crop": True,
+                    "crop_size": list(most_common_size)
+                }
+            },
+            "execution_flags": {
+                "mode": "train_and_predict",
+                "use_previous_model": True,
+                "fresh_start": False,
+                "use_gpu": True,
+                "mixed_precision": True,
+                "distributed_training": False,
+                "debug_mode": False
+            }
         }
 
         json_path = os.path.join(self.output_dir, f"{dataset_name}.json")
         with open(json_path, "w") as json_file:
             json.dump(json_data, json_file, indent=4)
         print(f"JSON file created at {json_path}")
+
 
 
 

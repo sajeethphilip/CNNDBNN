@@ -33,6 +33,55 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+class CustomImageDataset(Dataset):
+    def __init__(self, data_dir: str, transform=None, csv_file: Optional[str] = None):
+        self.data_dir = data_dir
+        self.transform = transform
+        self.label_encoder = {}
+        self.reverse_encoder = {}
+
+        if csv_file and os.path.exists(csv_file):
+            self.data = pd.read_csv(csv_file)
+        else:
+            self.image_files = []
+            self.labels = []
+            unique_labels = sorted(os.listdir(data_dir))
+
+            # Create label encodings
+            for idx, label in enumerate(unique_labels):
+                self.label_encoder[label] = idx
+                self.reverse_encoder[idx] = label
+
+            # Save encodings
+            encoding_file = os.path.join(data_dir, 'label_encodings.json')
+            with open(encoding_file, 'w') as f:
+                json.dump({
+                    'label_to_id': self.label_encoder,
+                    'id_to_label': self.reverse_encoder
+                }, f, indent=4)
+
+            # Process images
+            for class_name in unique_labels:
+                class_dir = os.path.join(data_dir, class_name)
+                if os.path.isdir(class_dir):
+                    for img_name in os.listdir(class_dir):
+                        if img_name.lower().endswith(('.png', '.jpg', '.jpeg')):
+                            self.image_files.append(os.path.join(class_dir, img_name))
+                            self.labels.append(self.label_encoder[class_name])
+
+    def __len__(self):
+        return len(self.image_files)
+
+    def __getitem__(self, idx):
+        img_path = self.image_files[idx]
+        image = Image.open(img_path).convert('RGB')
+        label = self.labels[idx]
+
+        if self.transform:
+            image = self.transform(image)
+
+        return image, label
+
 class FeatureExtractorCNN(nn.Module):
     """CNN for feature extraction from images."""
 
@@ -436,6 +485,69 @@ def setup_logging(log_dir='logs'):
 
     return logger
 
+def prepare_custom_data(config: Dict, use_cpu: bool = False) -> Tuple[str, str]:
+    logger.info("Preparing custom dataset...")
+    dataset_name = config['dataset']['name'].lower()
+    csv_file = f"{dataset_name}.csv"
+    conf_file = f"{dataset_name}.conf"
+
+    transform = get_transforms(config)
+    train_dataset = CustomImageDataset(
+        data_dir=config['dataset']['train_dir'],
+        transform=transform,
+        csv_file=config['dataset'].get('train_csv')
+    )
+
+    compute_device = torch.device('cuda' if torch.cuda.is_available() and not use_cpu else 'cpu')
+    storage_device = torch.device('cpu')
+
+    feature_extractor = FeatureExtractorCNN(
+        in_channels=config['dataset']['in_channels'],
+        feature_dims=config['model']['feature_dims']
+    ).to(compute_device)
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=len(train_dataset),
+        pin_memory=not use_cpu
+    )
+
+    features = []
+    labels = []
+    feature_extractor.eval()
+    with torch.no_grad():
+        for images, batch_labels in tqdm(train_loader, desc="Extracting features"):
+            images = images.to(compute_device)
+            batch_features = feature_extractor(images)
+            features.append(batch_features.to(storage_device).numpy())
+            labels.append(batch_labels.numpy())
+
+    features = np.concatenate(features, axis=0)
+    labels = np.concatenate(labels, axis=0)
+
+    feature_cols = {f'feature_{i}': features[:, i] for i in range(features.shape[1])}
+    feature_cols['target'] = labels
+    df = pd.DataFrame(feature_cols)
+    df.to_csv(csv_file, index=False)
+    logger.info(f"Features saved to {csv_file}")
+
+    custom_config = {
+        'file_path': csv_file,
+        'column_names': [f'feature_{i}' for i in range(features.shape[1])] + ['target'],
+        'target_column': 'target',
+        'separator': ',',
+        'has_header': True,
+        'likelihood_config': {
+            'feature_group_size': 2,
+            'max_combinations': 100,
+            'bin_sizes': [20]
+        }
+    }
+
+    with open(conf_file, 'w') as f:
+        json.dump(custom_config, f, indent=4)
+    return csv_file, conf_file
+
 def prepare_mnist_data(config: Dict) -> None:
     """
     Download and prepare MNIST dataset for DBNN.
@@ -566,8 +678,7 @@ def get_transforms(config: Dict):
 
     return transforms.Compose(transform_list)
 
-def get_dataset(config: Dict, transform):
-    """Get dataset based on configuration."""
+def get_dataset(config: Dict, transform, use_cpu: bool = False):
     dataset_config = config['dataset']
 
     if dataset_config['type'] == 'torchvision':
@@ -579,19 +690,16 @@ def get_dataset(config: Dict, transform):
                 root='./data', train=False, download=True, transform=transform
             )
         else:
-            fln=dataset_config['name'].upper()
-            # Use getattr to dynamically load the dataset class
+            fln = dataset_config['name'].upper()
             DatasetClass = getattr(torchvision.datasets, fln)
-            # Instantiate the dataset
             train_dataset = DatasetClass(
                 root='./data', train=True, download=True, transform=transform
             )
-            # Instantiate the dataset
             test_dataset = DatasetClass(
                 root='./data', train=False, download=True, transform=transform
             )
-
     elif dataset_config['type'] == 'custom':
+        prepare_custom_data(config, use_cpu)
         train_dataset = CustomImageDataset(
             data_dir=dataset_config['train_dir'],
             transform=transform,
@@ -656,24 +764,27 @@ def main(args):
     else:
         config = get_default_config()
 
-    device = torch.device('cuda' if torch.cuda.is_available() and not args.cpu else 'cpu')
+    compute_device = torch.device('cuda' if torch.cuda.is_available() and not args.cpu else 'cpu')
+    storage_device = torch.device('cpu')
 
     transform = get_transforms(config)
-    train_dataset, test_dataset = get_dataset(config, transform)
+    train_dataset, test_dataset = get_dataset(config, transform, args.cpu)
 
     train_loader = DataLoader(
         train_dataset,
         batch_size=config['training']['batch_size'],
         shuffle=True,
         num_workers=config['training']['num_workers'],
-        pin_memory=True if device.type == 'cuda' else False
-    )
+        pin_memory=not args.cpu
+        )
+
+    dataset_name = config['dataset']['name'].replace('-', '').replace('_', '').lower()
 
     model = AdaptiveCNNDBNN(
         dataset_name=config['dataset']['name'].lower(),
         in_channels=config['dataset']['in_channels'],
         feature_dims=config['model']['feature_dims'],
-        device=device,
+        device=compute_device,
         learning_rate=config['model']['learning_rate'],
         config=config
     )
