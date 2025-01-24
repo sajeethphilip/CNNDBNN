@@ -199,69 +199,51 @@ class AdaptiveCNNDBNN:
             lr=learning_rate
         )
 
-        try:
-            self.classifier = CNNDBNN(
-                dataset_name=dataset_name,
-                feature_dims=feature_dims,
-                device=device
-            )
-        except Exception as e:
-            logger.error(f"DBNN initialization error: {str(e)}")
-            raise
+        self.classifier = CNNDBNN(
+            dataset_name=dataset_name,
+            feature_dims=feature_dims,
+            device=device
+        )
 
         self.best_accuracy = 0.0
         self.current_epoch = 0
         self.history = defaultdict(list)
 
     def train(self,
-             train_loader: DataLoader,
-             val_loader: Optional[DataLoader] = None,
-             cnn_epochs: int = 10) -> Dict:
-        cnn_config = self.config.get('training', {}).get('cnn_training', {})
-        if cnn_config.get('resume', True) and not cnn_config.get('fresh_start', False):
-            checkpoint_dir = cnn_config.get('checkpoint_dir', 'Model/cnn_checkpoints')
-            checkpoint_path = os.path.join(checkpoint_dir, f"{self.dataset_name}_checkpoint.pth")
-            if os.path.exists(checkpoint_path):
-                self._load_checkpoint(checkpoint_path)
-                logger.info(f"Resumed training from checkpoint: {checkpoint_path}")
+                 train_loader: DataLoader,
+                 val_loader: Optional[DataLoader] = None,
+                 cnn_epochs: int = 10) -> Dict:
+            """Train both CNN feature extractor and DBNN classifier."""
 
-        logger.info("Training CNN feature extractor...")
-        cnn_history = self.train_feature_extractor(
-            train_loader,
-            val_loader,
-            cnn_epochs
-        )
+            # First train the CNN feature extractor
+            cnn_history = self.train_feature_extractor(train_loader, val_loader, cnn_epochs)
 
-        logger.info("Extracting features for DBNN...")
-        train_features = []
-        train_labels = []
+            # Extract features using trained CNN
+            logger.info("Extracting features for DBNN...")
+            train_features = []
+            train_labels = []
+            self.feature_extractor.eval()
+            with torch.no_grad():
+                for images, labels in tqdm(train_loader, desc="Extracting features"):
+                    images = images.to(self.device)
+                    features = self.feature_extractor(images)
+                    train_features.append(features)
+                    train_labels.append(labels.to(self.device))
 
-        self.feature_extractor.eval()
-        with torch.no_grad():
-            for images, labels in tqdm(train_loader, desc="Extracting features"):
-                images = images.to(self.device)
-                features = self.feature_extractor(images)
-                train_features.append(features)
-                train_labels.append(labels.to(self.device))
+            train_features = torch.cat(train_features, dim=0)
+            train_labels = torch.cat(train_labels, dim=0)
 
-        train_features = torch.cat(train_features, dim=0)
-        train_labels = torch.cat(train_labels, dim=0)
+            # Update DBNN with extracted features
+            self.classifier.update_data(train_features, train_labels)
 
-        self.classifier.update_data(train_features, train_labels)
+            # Train DBNN classifier
+            logger.info("Training DBNN classifier...")
+            dbnn_results = self.classifier.adaptive_fit_predict()
 
-        logger.info("Training DBNN classifier...")
-        dbnn_results = self.classifier.adaptive_fit_predict(
-            max_rounds=self.config.get('training', {}).get('epochs', 10),
-            batch_size=self.config.get('training', {}).get('batch_size', 32)
-        )
-
-        if cnn_config.get('save_checkpoints', True):
-            self._save_checkpoint(cnn_config.get('checkpoint_dir', 'Model/cnn_checkpoints'))
-
-        return {
-            'cnn_history': cnn_history,
-            'dbnn_results': dbnn_results
-        }
+            return {
+                'cnn_history': cnn_history,
+                'dbnn_results': dbnn_results
+            }
 
     def _save_checkpoint(self, checkpoint_dir: str, is_best: bool = False):
         os.makedirs(checkpoint_dir, exist_ok=True)
@@ -596,6 +578,19 @@ def get_dataset(config: Dict, transform):
             test_dataset = torchvision.datasets.MNIST(
                 root='./data', train=False, download=True, transform=transform
             )
+        else:
+            fln=dataset_config['name'].upper()
+            # Use getattr to dynamically load the dataset class
+            DatasetClass = getattr(torchvision.datasets, fln)
+            # Instantiate the dataset
+            train_dataset = DatasetClass(
+                root='./data', train=True, download=True, transform=transform
+            )
+            # Instantiate the dataset
+            test_dataset = DatasetClass(
+                root='./data', train=False, download=True, transform=transform
+            )
+
     elif dataset_config['type'] == 'custom':
         train_dataset = CustomImageDataset(
             data_dir=dataset_config['train_dir'],
@@ -653,65 +648,19 @@ def plot_confusion_matrix(true_labels: List, predictions: List,
         plt.savefig(save_path)
     plt.close()
 
-def main(args):
-    # Setup logging
-    logger = setup_logging()
-    logger.info(f"Starting training with arguments: {args}")
 
-    # Load configuration
+
+def main(args):
     if args.config:
         config = load_config(args.config)
     else:
-        logger.info("No config provided, using default MNIST configuration")
-        try:
-            config = get_default_config()
-        except Exception as e:
-            logger.error(f"Error creating default configuration: {str(e)}")
-            raise
+        config = get_default_config()
 
-    # Verify dataset name is consistent
-    dataset_name = config['dataset']['name']
-    required_files = [f"{dataset_name}.csv", f"{dataset_name}.conf"]
-    for file in required_files:
-        if not os.path.exists(file):
-            logger.error(f"Required file {file} not found")
-            raise FileNotFoundError(f"Required file {file} not found")
-
-    # Set device
     device = torch.device('cuda' if torch.cuda.is_available() and not args.cpu else 'cpu')
-    logger.info(f"Using device: {device}")
 
-    # Create output directory
-    os.makedirs(args.output_dir, exist_ok=True)
-
-    # Initialize model
-    try:
-        model = AdaptiveCNNDBNN(
-            dataset_name=dataset_name,
-            in_channels=config['dataset']['in_channels'],
-            feature_dims=config['model']['feature_dims'],
-            device=device,
-            learning_rate=config['model']['learning_rate']
-        )
-
-        # Set batch size for DBNN classifier
-        model.classifier.batch_size = config['training']['batch_size']
-
-    except Exception as e:
-        logger.error(f"Error initializing model: {str(e)}")
-        raise
-
-
-    # Check if dataset files exist
-    if not os.path.exists(f"{config['dataset']['name']}_test.csv"):
-        logger.info("Dataset file not found, preparing data...")
-        prepare_mnist_data(config)
-
-    # Get transforms and datasets
     transform = get_transforms(config)
     train_dataset, test_dataset = get_dataset(config, transform)
 
-    # Create data loaders
     train_loader = DataLoader(
         train_dataset,
         batch_size=config['training']['batch_size'],
@@ -720,85 +669,25 @@ def main(args):
         pin_memory=True if device.type == 'cuda' else False
     )
 
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=config['training']['batch_size'],
-        shuffle=False,
-        num_workers=config['training']['num_workers'],
-        pin_memory=True if device.type == 'cuda' else False
-    )
-
-    # Initialize model
     model = AdaptiveCNNDBNN(
-        dataset_name=config['dataset']['name'],
+        dataset_name=config['dataset']['name'].lower(),
         in_channels=config['dataset']['in_channels'],
         feature_dims=config['model']['feature_dims'],
         device=device,
-        learning_rate=config['model']['learning_rate']
+        learning_rate=config['model']['learning_rate'],
+        config=config
     )
 
-    # Train model
-    logger.info("Starting training...")
-    history = model.train(
-        train_loader,
-        test_loader,
-        cnn_epochs=config['training']['epochs']
-    )
-
-    # Save training history plot
-    plot_training_history(
-        history,
-        save_path=os.path.join(args.output_dir, 'training_history.png')
-    )
-
-    # Evaluate on test set
-    logger.info("Evaluating model...")
-    all_predictions = []
-    all_labels = []
-
-    model.feature_extractor.eval()
-    with torch.no_grad():
-        for images, labels in test_loader:
-            images = images.to(device)
-            predictions = model.predict(images)
-            all_predictions.extend(predictions.cpu().numpy())
-            all_labels.extend(labels.numpy())
-
-    # Calculate accuracy
-    accuracy = np.mean(np.array(all_predictions) == np.array(all_labels))
-    logger.info(f"Test Accuracy: {accuracy:.4f}")
-
-    # Save results
-    class_names = (train_dataset.classes
-                  if hasattr(train_dataset, 'classes')
-                  else range(config['dataset']['num_classes']))
-
-    plot_confusion_matrix(
-        all_labels,
-        all_predictions,
-        class_names=class_names,
-        save_path=os.path.join(args.output_dir, 'confusion_matrix.png')
-    )
-
-    # Save model and configuration
-    model_path = os.path.join(args.output_dir, 'model.pth')
-    config_path = os.path.join(args.output_dir, 'config.json')
-
-    model.save_model(model_path)
-    with open(config_path, 'w') as f:
-        json.dump(config, f, indent=4)
-
-    logger.info(f"Model saved to {model_path}")
-    logger.info(f"Configuration saved to {config_path}")
+    results = model.train(train_loader)
+    logger.info("Training completed successfully")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train AdaptiveCNNDBNN')
     parser.add_argument('--config', type=str, default=None,
-                        help='path to configuration file')
+                       help='path to configuration file')
     parser.add_argument('--output-dir', type=str, default='training_results',
-                        help='output directory (default: training_results)')
+                       help='output directory (default: training_results)')
     parser.add_argument('--cpu', action='store_true',
-                        help='force CPU usage')
-
+                       help='force CPU usage')
     args = parser.parse_args()
     main(args)
