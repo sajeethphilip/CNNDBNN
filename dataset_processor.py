@@ -169,9 +169,10 @@ class DatasetProcessor:
 def main():
     try:
         datafile = input("Enter dataset name or path (default: MNIST): ").strip() or "MNIST"
-        datafile=datafile.upper()
-        datatype = input("Enter dataset type (torchvision/custom) (default: torchvision): ").strip() or "torchvision"
 
+        datatype = input("Enter dataset type (torchvision/custom) (default: torchvision): ").strip() or "torchvision"
+        if datatype=='torchvision':
+            datafile=datafile.upper()
         processor = DatasetProcessor(datafile=datafile, datatype=datatype)
         train_dir, test_dir = processor.process()
         processor.generate_json(train_dir, test_dir)
