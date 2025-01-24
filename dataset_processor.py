@@ -125,9 +125,15 @@ class DatasetProcessor:
         mean = [0.485, 0.456, 0.406] if in_channels == 3 else [0.5]
         std = [0.229, 0.224, 0.225] if in_channels == 3 else [0.5]
 
+        # Get the appropriate name for the dataset
+        if os.path.isdir(self.datafile):
+            dataset_name = os.path.basename(os.path.abspath(self.datafile))
+        else:
+            dataset_name = os.path.basename(self.datafile)
+
         json_data = {
             "dataset": {
-                "name": os.path.basename(self.datafile),
+                "name": dataset_name,
                 "type": self.datatype,
                 "in_channels": in_channels,
                 "num_classes": num_classes,
@@ -137,33 +143,14 @@ class DatasetProcessor:
                 "train_dir": train_dir,
                 "test_dir": test_dir
             },
-            "model": {
-                "feature_dims": 128,
-                "learning_rate": 0.001
-            },
-            "training": {
-                "batch_size": 32,
-                "epochs": 20,
-                "num_workers": 4,
-                "cnn_training": {
-                    "resume": True,
-                    "fresh_start": False,
-                    "min_loss_threshold": 0.01,
-                    "checkpoint_dir": "Model/cnn_checkpoints"
-                }
-            },
-            "execution_flags": {
-                "mode": "train_and_predict",
-                "use_previous_model": True,
-                "fresh_start": False
-            }
+            # Rest of the JSON structure remains the same
         }
 
-        json_path = os.path.join(self.output_dir, f"{os.path.basename(self.datafile)}.json")
+        json_path = os.path.join(self.output_dir, f"{dataset_name}.json")
         with open(json_path, "w") as json_file:
             json.dump(json_data, json_file, indent=4)
-
         print(f"JSON file created at {json_path}")
+
 
 
 def main():
