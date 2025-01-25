@@ -676,122 +676,177 @@ python CDBNN_train.py --config path/to/config.json --cpu
 - Supported image formats: JPG, PNG, JPEG
 - mean/std values should be calculated from your dataset or use ImageNet defaults
 
-### Model Architecture
+# CNN-DBNN Parameter Guide
+
+## Dataset Parameters
+```json
+"dataset": {
+    "name": "string",       // Unique identifier for the dataset
+    "type": "custom",       // "custom" for own data, "torchvision" for built-in datasets
+    "in_channels": 3,       // Input image channels: 1 (grayscale), 3 (RGB), 4 (RGBA)
+    "num_classes": 2,       // Number of classification categories
+    "input_size": [64, 64], // [height, width] for model input
+                           // Larger = more detail but slower training
+                           // Common sizes: [32,32], [64,64], [128,128], [224,224]
+    
+    "mean": [0.485, 0.456, 0.406],  // Per-channel normalization means
+                                    // ImageNet defaults shown
+                                    // Calculate from your dataset for best results
+    
+    "std": [0.229, 0.224, 0.225],   // Per-channel normalization standard deviations
+                                    // ImageNet defaults shown
+                                    // Calculate from your dataset for best results
+}
+```
+
+## Model Parameters
 ```json
 "model": {
-    "architecture": "CNN",
-    "feature_dims": 128,        // Output feature dimension
-    "learning_rate": 0.001,
+    "feature_dims": 128,    // Output feature dimension
+                           // Higher = more complex features but slower training
+                           // Common values: 64, 128, 256, 512
+    
+    "learning_rate": 0.001, // Initial learning rate
+                           // Too high: unstable training
+                           // Too low: slow convergence
+                           // Common ranges: 0.1-0.0001
+    
     "optimizer": {
-        "type": "Adam",         // Options: "Adam", "SGD"
-        "weight_decay": 0.0001, // L2 regularization
-        "momentum": 0.9         // Only for SGD
+        "type": "Adam",     // Optimizer choice:
+                           // "Adam": Adaptive, good default
+                           // "SGD": Traditional, needs tuning
+        
+        "weight_decay": 0.0001,  // L2 regularization strength
+                                // Higher = more regularization
+                                // Common ranges: 0.1-0.00001
+        
+        "momentum": 0.9          // For SGD only: momentum coefficient
+                                // Higher = more stable updates
+                                // Common range: 0.8-0.99
     },
+
     "scheduler": {
-        "type": "StepLR",      // Learning rate scheduler
-        "step_size": 7,        // Epochs before adjustment
-        "gamma": 0.1           // Multiplicative factor
+        "type": "StepLR",   // Learning rate adjustment strategy
+        "step_size": 7,     // Epochs between adjustments
+                           // Lower = more frequent updates
+        "gamma": 0.1        // Multiplication factor at each step
+                           // 0.1 = reduce by 90%
     }
 }
 ```
 
-#### Optimizer Options:
-- Adam: Best for most cases, supports weight_decay
-- SGD: Traditional approach, supports momentum and weight_decay
-
-### Training Configuration
+## Training Parameters
 ```json
 "training": {
-    "batch_size": 32,          // Training batch size
-    "epochs": 20,              // Maximum training epochs
-    "num_workers": 4,          // DataLoader workers
+    "batch_size": 32,      // Images per training step
+                          // Larger = faster but more memory
+                          // Common values: 16, 32, 64, 128
+    
+    "epochs": 20,         // Maximum training iterations
+                         // Higher = more training time
+                         // Common range: 10-100
+    
+    "num_workers": 4,     // DataLoader parallel processes
+                         // Rule of thumb: CPU cores - 2
+    
     "early_stopping": {
-        "patience": 5,         // Epochs to wait before stopping
-        "min_delta": 0.001     // Minimum improvement threshold
+        "patience": 5,    // Epochs to wait before stopping
+                         // Higher = more chance to recover
+                         // Common range: 3-10
+        
+        "min_delta": 0.001  // Minimum improvement threshold
+                           // Smaller = stricter stopping
+                           // Common range: 0.01-0.0001
     },
+
     "cnn_training": {
-        "resume": true,        // Resume from checkpoint
-        "fresh_start": false,  // Ignore existing checkpoints
-        "min_loss_threshold": 0.01,  // Early stopping threshold
-        "checkpoint_dir": "Model/cnn_checkpoints",
-        "save_best_only": true,      // Save only best model
-        "validation_split": 0.2       // Validation set size
+        "resume": true,           // Continue from checkpoint
+        "fresh_start": false,     // Ignore checkpoints
+        "min_loss_threshold": 0.01, // Early stopping loss target
+                                   // Lower = longer training
+        "validation_split": 0.2    // Fraction for validation
+                                  // Common range: 0.1-0.3
     }
 }
 ```
 
-### Data Augmentation
+## Augmentation Parameters
 ```json
 "augmentation": {
     "train": {
-        "horizontal_flip": true,    // Random horizontal flip
-        "vertical_flip": false,     // Random vertical flip
+        "horizontal_flip": true,    // Random horizontal flips
+                                   // Good for natural images
+        
+        "vertical_flip": false,     // Random vertical flips
+                                   // Usually false for natural images
+        
         "random_rotation": 15,      // Max rotation degrees
-        "random_crop": true,        // Enable random cropping
-        "crop_size": [256, 256],    // Crop dimensions
-        "color_jitter": {           // Color augmentation
-            "brightness": 0.2,       // Brightness adjustment
-            "contrast": 0.2,         // Contrast adjustment
-            "saturation": 0.2,       // Saturation adjustment
-            "hue": 0.1              // Hue adjustment
+                                   // Higher = more variation
+                                   // Common range: 5-30
+        
+        "random_crop": true,        // Random crop sampling
+        "crop_size": [256, 256],    // Final crop dimensions
+                                   // Should be <= original size
+        
+        "color_jitter": {
+            "brightness": 0.2,      // Brightness variation ±20%
+                                   // Common range: 0.1-0.3
+            
+            "contrast": 0.2,        // Contrast variation ±20%
+                                   // Common range: 0.1-0.3
+            
+            "saturation": 0.2,      // Color intensity variation ±20%
+                                   // Common range: 0.1-0.3
+            
+            "hue": 0.1             // Color shift (max 0.5)
+                                  // Common range: 0.05-0.2
         }
-    },
-    "test": {
-        "center_crop": true,        // Center crop test images
-        "crop_size": [256, 256]     // Test crop dimensions
     }
 }
 ```
 
-### Execution Flags
+## Execution Parameters
 ```json
 "execution_flags": {
-    "mode": "train_and_predict",  // Execution mode
-    "use_previous_model": true,   // Load existing model
-    "fresh_start": false,         // Ignore previous training
-    "use_gpu": true,             // Enable GPU usage
-    "mixed_precision": true,      // Enable AMP training
-    "distributed_training": false, // Multi-GPU training
-    "debug_mode": false          // Enable debug logging
+    "mode": "train_and_predict",  // Operation mode
+    "use_gpu": true,             // Enable GPU acceleration
+    "mixed_precision": true,      // Use 16-bit precision
+                                 // Faster but slightly less accurate
+    
+    "distributed_training": false, // Multi-GPU support
+    "debug_mode": false           // Verbose logging
 }
 ```
 
-## 4. Directory Structure
+## Parameter Selection Guidelines
 
-### Input Directory Structure
-```
-data/
-└── dataset_name/
-    ├── train/
-    │   ├── class1/
-    │   │   ├── image1.jpg
-    │   │   └── image2.jpg
-    │   └── class2/
-    │       ├── image3.jpg
-    │       └── image4.jpg
-    └── test/
-        ├── class1/
-        │   └── test1.jpg
-        └── class2/
-            └── test2.jpg
-```
+### For Small Datasets (<1000 images):
+- Increase augmentation parameters
+- Use smaller batch_size (16-32)
+- Higher learning_rate (0.001-0.01)
+- More epochs (50+)
+- Stronger regularization (weight_decay: 0.001)
 
-### Output Directory Structure
-```
-project_root/
-├── Model/
-│   └── cnn_checkpoints/
-│       ├── best_model.pth
-│       └── latest_checkpoint.pth
-├── logs/
-│   └── training_YYYYMMDD_HHMMSS.log
-├── dataset_name.csv      # Extracted features
-├── dataset_name.conf     # DBNN configuration
-└── training_results/
-    ├── confusion_matrix.png
-    └── training_history.json
-```
+### For Large Datasets (>10000 images):
+- Reduce augmentation
+- Larger batch_size (64-128)
+- Lower learning_rate (0.0001-0.001)
+- Fewer epochs (20-30)
+- Lighter regularization (weight_decay: 0.0001)
 
+### For Imbalanced Classes:
+- Increase augmentation for minority classes
+- Use smaller batch_size
+- Adjust class weights
+- Lower learning_rate
+- More patience in early_stopping
+
+### For Limited Memory:
+- Reduce batch_size
+- Enable mixed_precision
+- Decrease input_size
+- Reduce feature_dims
+- Fewer num_workers
 ## 5. Output Files
 
 ### Feature CSV Format
