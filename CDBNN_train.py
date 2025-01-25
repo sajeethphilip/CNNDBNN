@@ -184,22 +184,23 @@ class DatasetProcessor:
                         "gamma": 0.1
                     }
                 },
-                "training": {
-                    "batch_size": 32,
-                    "epochs": 20,
-                    "num_workers": 4,
-                    "early_stopping": {
-                        "patience": 5,
-                        "min_delta": 0.001
-                    },
-                    "cnn_training": {
-                        "resume": True,
-                        "fresh_start": False,
-                        "min_loss_threshold": 0.01,
-                        "checkpoint_dir": "Model/cnn_checkpoints",
-                        "save_best_only": True,
-                        "validation_split": 0.2
-                    }
+                        "training": {
+                            "batch_size": 32,
+                            "epochs": 20,
+                            "num_workers": 4,
+                            "merge_train_test": False,  # Default to False
+                            "early_stopping": {
+                                "patience": 5,
+                                "min_delta": 0.001
+                            },
+                            "cnn_training": {
+                                "resume": True,
+                                "fresh_start": False,
+                                "min_loss_threshold": 0.01,
+                                "checkpoint_dir": "Model/cnn_checkpoints",
+                                "save_best_only": True,
+                                "validation_split": 0.2
+                            }
                 },
                      "augmentation": {
                         "enabled": True,
@@ -271,6 +272,7 @@ class CombinedDataset(Dataset):
 
 def get_dataset(config: Dict, transform, use_cpu: bool = False):
     dataset_config = config['dataset']
+    merge_datasets = config.get('training', {}).get('merge_train_test', False)
 
     if dataset_config['type'] == 'torchvision':
         train_dataset = getattr(torchvision.datasets, dataset_config['name'].upper())(
@@ -279,8 +281,6 @@ def get_dataset(config: Dict, transform, use_cpu: bool = False):
         test_dataset = getattr(torchvision.datasets, dataset_config['name'].upper())(
             root='./data', train=False, download=True, transform=transform
         )
-        return CombinedDataset(train_dataset, test_dataset), None
-
     elif dataset_config['type'] == 'custom':
         train_dataset = CustomImageDataset(
             data_dir=dataset_config['train_dir'],
@@ -290,9 +290,12 @@ def get_dataset(config: Dict, transform, use_cpu: bool = False):
             data_dir=dataset_config['test_dir'],
             transform=transform
         )
-        return CombinedDataset(train_dataset, test_dataset), None
+    else:
+        raise ValueError(f"Unknown dataset type: {dataset_config['type']}")
 
-    raise ValueError(f"Unknown dataset type: {dataset_config['type']}")
+    if merge_datasets:
+        return CombinedDataset(train_dataset, test_dataset), None
+    return train_dataset, test_dataset
 
 class CustomImageDataset(Dataset):
     def __init__(self, data_dir: str, transform=None, csv_file: Optional[str] = None):
@@ -1134,6 +1137,9 @@ def main(args=None):
                 processor.generate_json(train_dir, test_dir)
                 with open(config_path, 'r') as f:
                     config = json.load(f)
+       # Ask about dataset merging
+        merge_datasets = input("Merge train and test datasets for adaptive learning? (y/n, default: n): ").lower() == 'y'
+        config['training']['merge_train_test'] = merge_datasets
 
         # Rest of the training code remains the same
         device = torch.device('cuda' if torch.cuda.is_available() and not config['execution_flags'].get('cpu', False) else 'cpu')
