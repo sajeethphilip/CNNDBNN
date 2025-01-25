@@ -26,7 +26,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from adaptive_cnn_dbnn import AdaptiveCNNDBNN, setup_dbnn_environment, FeatureExtractorCNN, CNNDBNN
 from torch.utils.data import ConcatDataset, Dataset, DataLoader
-
+import torch.nn.functional as F
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -295,49 +295,38 @@ class AdaptiveCNNDBNN:
 
     def train(self,
                  train_loader: DataLoader,
-                 val_loader: Optional[DataLoader] = None,
-                 cnn_epochs: int = 10) -> Dict:
-            """Train both CNN feature extractor and DBNN classifier."""
+                 val_loader: Optional[DataLoader] = None) -> Dict:
+        """Complete training pipeline."""
+        logger.info("Training CNN feature extractor...")
+        cnn_history = self.train_feature_extractor(
+            train_loader=train_loader,
+            val_loader=val_loader,
+            epochs=self.config['training']['epochs']
+        )
 
-            # First train the CNN feature extractor
-            cnn_config = self.config['training'].get('cnn_training', {})
+        logger.info("Extracting features for DBNN...")
+        train_features = []
+        train_labels = []
 
-            epochs = self.config['training'].get('epochs', 10)
-            cnn_history = self.train_feature_extractor(
-                train_loader,
-                val_loader,
-                epochs=epochs,
-                min_loss=cnn_config.get('min_loss_threshold', 0.01),
-                save_best=cnn_config.get('save_best_only', True),
-                checkpoint_dir=cnn_config.get('checkpoint_dir', 'Model/cnn_checkpoints')
-            )
-            # Extract features using trained CNN
-            logger.info("Extracting features for DBNN...")
-            train_features = []
-            train_labels = []
-            self.feature_extractor.eval()
-            with torch.no_grad():
-                for images, labels in tqdm(train_loader, desc="Extracting features"):
-                    images = images.to(self.device)
-                    features = self.feature_extractor(images)
-                    train_features.append(features)
-                    train_labels.append(labels.to(self.device))
+        self.feature_extractor.eval()
+        with torch.no_grad():
+            for images, labels in tqdm(train_loader, desc="Extracting features"):
+                images = images.to(self.device)
+                features = self.extract_features(images)
+                train_features.append(features)
+                train_labels.append(labels.to(self.device))
 
-            train_features = torch.cat(train_features, dim=0)
-            train_labels = torch.cat(train_labels, dim=0)
+        train_features = torch.cat(train_features, dim=0)
+        train_labels = torch.cat(train_labels, dim=0)
 
-            # Update DBNN with extracted features
-            self.classifier.update_data(train_features, train_labels)
+        self.classifier.update_data(train_features, train_labels)
+        logger.info("Training DBNN classifier...")
+        dbnn_results = self.classifier.adaptive_fit_predict()
 
-            # Train DBNN classifier
-            logger.info("Training DBNN classifier...")
-            dbnn_results = self.classifier.adaptive_fit_predict()
-
-            return {
-                'cnn_history': cnn_history,
-                'dbnn_results': dbnn_results
-            }
-
+        return {
+            'cnn_history': cnn_history,
+            'dbnn_results': dbnn_results
+        }
     def _save_checkpoint(self, checkpoint_dir: str, is_best: bool = False):
         os.makedirs(checkpoint_dir, exist_ok=True)
         checkpoint = {
@@ -369,20 +358,20 @@ class AdaptiveCNNDBNN:
         return True
 
     def train_feature_extractor(self,
-                             train_loader: DataLoader,
-                             val_loader: Optional[DataLoader] = None,
-                             epochs: int = 10,
-                             min_loss: float = 0.01,
-                             save_best: bool = True,
-                             checkpoint_dir: str = 'Model/cnn_checkpoints') -> Dict[str, List[float]]:
+                                  train_loader: DataLoader,
+                                  val_loader: Optional[DataLoader] = None,
+                                  epochs: int = 10) -> Dict[str, List[float]]:
+        """Train CNN feature extractor with balanced triplet sampling."""
         self.feature_extractor.train()
         history = {'train_loss': [], 'val_loss': []}
-        criterion = nn.TripletMarginLoss()
+        criterion = nn.TripletMarginLoss(margin=0.2)
+        best_loss = float('inf')
 
         for epoch in range(epochs):
-            self.current_epoch = epoch
             epoch_loss = 0.0
             valid_batches = 0
+            total_samples = 0
+            correct_predictions = 0
 
             for images, labels in tqdm(train_loader, desc=f'Epoch {epoch + 1}/{epochs}'):
                 images = images.to(self.device)
@@ -391,7 +380,9 @@ class AdaptiveCNNDBNN:
                 self.optimizer.zero_grad()
                 features = self.feature_extractor(images)
 
+                # Get balanced triplet samples
                 anchors, positives, negatives = self._get_triplet_samples(features, labels)
+
                 if anchors is not None:
                     loss = criterion(anchors, positives, negatives)
                     loss.backward()
@@ -399,17 +390,34 @@ class AdaptiveCNNDBNN:
                     epoch_loss += loss.item()
                     valid_batches += 1
 
-                if valid_batches > 0:
-                    avg_loss = epoch_loss / valid_batches
-                    history['train_loss'].append(avg_loss)
+                    # Calculate accuracy using cosine similarity
+                    with torch.no_grad():
+                        pos_sim = F.cosine_similarity(anchors, positives)
+                        neg_sim = F.cosine_similarity(anchors, negatives)
+                        correct_predictions += torch.sum(pos_sim > neg_sim).item()
+                        total_samples += anchors.size(0)
 
-                    if avg_loss < min_loss:
-                        logger.info(f"Loss {avg_loss:.4f} below threshold {min_loss}. Early stopping.")
-                        break
+            if valid_batches > 0:
+                avg_loss = epoch_loss / valid_batches
+                accuracy = (correct_predictions / total_samples) * 100 if total_samples > 0 else 0
+                history['train_loss'].append(avg_loss)
 
-            if save_best:
-                os.makedirs(checkpoint_dir, exist_ok=True)
-                self._save_checkpoint(checkpoint_dir, is_best=True)
+                if val_loader is not None:
+                    val_loss, val_acc = self._validate_feature_extractor(val_loader, criterion)
+                    history['val_loss'].append(val_loss)
+                    logger.info(f'Epoch {epoch + 1}: Loss = {avg_loss:.4f}, Acc = {accuracy:.2f}%, '
+                              f'Val Loss = {val_loss:.4f}, Val Acc = {val_acc:.2f}%')
+                else:
+                    logger.info(f'Epoch {epoch + 1}: Loss = {avg_loss:.4f}, Acc = {accuracy:.2f}%')
+
+                # Save checkpoint silently if it's the best model
+                if avg_loss < best_loss:
+                    best_loss = avg_loss
+                    self._save_checkpoint('Model/cnn_checkpoints', is_best=True)
+
+                if avg_loss < 0.01:
+                    logger.info(f'Loss {avg_loss:.4f} below threshold 0.01. Early stopping.')
+                    break
 
         return history
 
@@ -437,11 +445,14 @@ class AdaptiveCNNDBNN:
                 features[indices[:, 2]])
 
     def _validate_feature_extractor(self,
-                                 val_loader: DataLoader,
-                                 criterion: nn.Module) -> float:
+                                  val_loader: DataLoader,
+                                  criterion: nn.Module) -> Tuple[float, float]:
+        """Validate CNN feature extractor."""
         self.feature_extractor.eval()
         val_loss = 0.0
         valid_batches = 0
+        total_samples = 0
+        correct_predictions = 0
 
         with torch.no_grad():
             for images, labels in val_loader:
@@ -450,12 +461,20 @@ class AdaptiveCNNDBNN:
                 features = self.feature_extractor(images)
 
                 anchors, positives, negatives = self._get_triplet_samples(features, labels)
+
                 if anchors is not None:
                     loss = criterion(anchors, positives, negatives)
                     val_loss += loss.item()
                     valid_batches += 1
 
-        return val_loss / valid_batches if valid_batches > 0 else float('inf')
+                    pos_sim = F.cosine_similarity(anchors, positives)
+                    neg_sim = F.cosine_similarity(anchors, negatives)
+                    correct_predictions += torch.sum(pos_sim > neg_sim).item()
+                    total_samples += anchors.size(0)
+
+        avg_loss = val_loss / valid_batches if valid_batches > 0 else float('inf')
+        accuracy = (correct_predictions / total_samples) * 100 if total_samples > 0 else 0
+        return avg_loss, accuracy
 
     def extract_features(self, images: torch.Tensor) -> torch.Tensor:
         self.feature_extractor.eval()
@@ -705,7 +724,6 @@ def prepare_mnist_data(config: Dict) -> None:
     return csv_file, conf_file
 
 def get_default_config() -> Dict:
-    """Get default configuration for MNIST."""
     config = {
         'dataset': {
             'name': 'mnist',
@@ -724,10 +742,22 @@ def get_default_config() -> Dict:
             'batch_size': 64,
             'epochs': 10,
             'num_workers': 4
+        },
+        'augmentation': {
+            'train': {
+                'horizontal_flip': False,
+                'vertical_flip': False,
+                'random_rotation': 10,
+                'random_crop': False,
+                'crop_size': 28
+            },
+            'test': {
+                'center_crop': False,
+                'crop_size': 28
+            }
         }
     }
 
-    # Prepare MNIST data and configuration
     csv_file, conf_file = prepare_mnist_data(config)
 
     # Verify files were created
