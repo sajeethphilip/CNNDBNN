@@ -1,4 +1,8 @@
 import torch
+from  datetime import datetime, timedelta
+import time
+import shutil
+import glob
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
@@ -28,8 +32,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-#from adaptive_cnn_dbnn import AdaptiveCNNDBNN, CNNDBNN
-#from adaptive_cnn_dbnn import setup_dbnn_environment, FeatureExtractorCNN
 from torch.utils.data import ConcatDataset, Dataset, DataLoader
 import torch.nn.functional as F
 logging.basicConfig(
@@ -478,14 +480,25 @@ class CNNDBNN(GPUDBNN):
 
     def update_data(self, features: torch.Tensor, labels: torch.Tensor):
         """Update internal data with new features."""
-        # Convert to numpy arrays
         features_np = features.cpu().numpy()
         labels_np = labels.cpu().numpy()
 
-        # Create DataFrame
         feature_cols = [f'feature_{i}' for i in range(features_np.shape[1])]
         self.data = pd.DataFrame(features_np, columns=feature_cols)
         self.data['target'] = labels_np
+
+        # Update training set size in the model
+        self.n_train = len(self.data)
+        self.n_test = 0  # Will be set during adaptive_fit_predict
+
+        # Update cardinality parameters
+        unique_labels, counts = np.unique(labels_np, return_counts=True)
+        self.class_counts = dict(zip(unique_labels, counts))
+        self.n_classes = len(unique_labels)
+
+        logger.info(f"Updated DBNN with {self.n_train} samples")
+        for class_id, count in self.class_counts.items():
+            logger.info(f"Class {class_id}: {count} samples")
 
 class AdaptiveCNNDBNN:
     def __init__(self,
@@ -500,6 +513,9 @@ class AdaptiveCNNDBNN:
         self.learning_rate = learning_rate
         self.dataset_name = dataset_name
         self.config = config or {}
+        self.training_log = []
+        self.log_dir = os.path.join('Traininglog', self.dataset_name)
+        os.makedirs(self.log_dir, exist_ok=True)
 
         setup_dbnn_environment(self.device, self.learning_rate)
 
@@ -523,9 +539,175 @@ class AdaptiveCNNDBNN:
         self.current_epoch = 0
         self.history = defaultdict(list)
 
-    def train(self,
-                 train_loader: DataLoader,
-                 val_loader: Optional[DataLoader] = None) -> Dict:
+        # Existing initialization code...
+        self.accumulated_features = None
+        self.accumulated_labels = None
+        self.training_start_time = None
+
+        if not config['execution_flags'].get('fresh_start', False):
+            self.load_previous_training_data()
+            self._load_previous_model()
+
+    def _load_previous_model(self):
+        """Load both CNN and DBNN previous models."""
+        # Load CNN weights
+        cnn_checkpoint_path = os.path.join('Model/cnn_checkpoints', f"{self.dataset_name}_best.pth")
+        if os.path.exists(cnn_checkpoint_path):
+            checkpoint = torch.load(cnn_checkpoint_path, map_location=self.device)
+            self.feature_extractor.load_state_dict(checkpoint['feature_extractor'])
+            self.optimizer.load_state_dict(checkpoint['optimizer'])
+            self.current_epoch = checkpoint.get('epoch', 0)
+            self.best_accuracy = checkpoint.get('best_accuracy', 0.0)
+            logger.info(f"Loaded CNN checkpoint from {cnn_checkpoint_path}")
+
+
+    def log_training_metrics(self, epoch: int, train_loss: float, train_acc: float,
+                           test_loss: Optional[float] = None, test_acc: Optional[float] = None,
+                           train_loader: DataLoader = None, test_loader: Optional[DataLoader] = None):
+        if self.training_start_time is None:
+            self.training_start_time = time.time()
+
+        elapsed_time = time.time() - self.training_start_time
+
+        metrics = {
+            'epoch': epoch,
+            'elapsed_time': elapsed_time,
+            'elapsed_time_formatted': str(timedelta(seconds=int(elapsed_time))),
+            'learning_rate': self.optimizer.param_groups[0]['lr'],
+            'train_samples': len(train_loader.dataset) if train_loader else None,
+            'test_samples': len(test_loader.dataset) if test_loader else None,
+            'train_loss': train_loss,
+            'train_accuracy': train_acc,
+            'test_loss': test_loss,
+            'test_accuracy': test_acc
+        }
+        self.training_log.append(metrics)
+
+        log_df = pd.DataFrame(self.training_log)
+        log_path = os.path.join(self.log_dir, f'TrainTestLoss_{self.dataset_name}.csv')
+        log_df.to_csv(log_path, index=False)
+
+        logger.info(f"Epoch {epoch} ({metrics['elapsed_time_formatted']}): "
+                   f"Train [{metrics['train_samples']} samples] Loss {train_loss:.4f}, Acc {train_acc:.2f}%"
+                   + (f", Test [{metrics['test_samples']} samples] Loss {test_loss:.4f}, Acc {test_acc:.2f}%"
+                      if test_loss is not None else ""))
+
+
+    def create_training_animations(self):
+        """Create animated plots of training progress."""
+        import matplotlib.animation as animation
+
+        log_df = pd.DataFrame(self.training_log)
+        fig_dir = os.path.join(self.log_dir, 'animations')
+        os.makedirs(fig_dir, exist_ok=True)
+
+        # Get next sequence number
+        def get_next_seq():
+            existing = glob.glob(os.path.join(fig_dir, '*_*.gif'))
+            if not existing:
+                return 1
+            seqs = [int(re.search(r'_(\d+)\.gif$', f).group(1)) for f in existing if re.search(r'_(\d+)\.gif$', f)]
+            return max(seqs) + 1 if seqs else 1
+
+        seq = get_next_seq()
+
+        # Accuracy Progress Animation
+        fig_acc, ax_acc = plt.subplots(figsize=(10, 6))
+        def update_acc(frame):
+            ax_acc.clear()
+            data = log_df.iloc[:frame+1]
+            ax_acc.plot(data['epoch'], data['train_accuracy'], label='Train')
+            if 'test_accuracy' in data.columns:
+                ax_acc.plot(data['epoch'], data['test_accuracy'], label='Test')
+            ax_acc.set_xlabel('Epoch')
+            ax_acc.set_ylabel('Accuracy (%)')
+            ax_acc.set_title(f'Training Progress - Accuracy\nTime: {data.iloc[-1]["elapsed_time_formatted"]}')
+            ax_acc.legend()
+            ax_acc.grid(True)
+
+        anim_acc = animation.FuncAnimation(fig_acc, update_acc, frames=len(log_df))
+        anim_acc.save(os.path.join(fig_dir, f'accuracy_progress_{seq}.gif'))
+        plt.close()
+
+        # Loss Progress Animation
+        fig_loss, ax_loss = plt.subplots(figsize=(10, 6))
+        def update_loss(frame):
+            ax_loss.clear()
+            data = log_df.iloc[:frame+1]
+            ax_loss.plot(data['epoch'], data['train_loss'], label='Train')
+            if 'test_loss' in data.columns:
+                ax_loss.plot(data['epoch'], data['test_loss'], label='Test')
+            ax_loss.set_xlabel('Epoch')
+            ax_loss.set_ylabel('Loss')
+            ax_loss.set_title(f'Training Progress - Loss\nTime: {data.iloc[-1]["elapsed_time_formatted"]}')
+            ax_loss.legend()
+            ax_loss.grid(True)
+
+        anim_loss = animation.FuncAnimation(fig_loss, update_loss, frames=len(log_df))
+        anim_loss.save(os.path.join(fig_dir, f'loss_progress_{seq}.gif'))
+        plt.close()
+
+        # Sample Size Progress Animation
+        fig_samples, ax_samples = plt.subplots(figsize=(10, 6))
+        def update_samples(frame):
+            ax_samples.clear()
+            data = log_df.iloc[:frame+1]
+            ax_samples.plot(data['epoch'], data['train_samples'], label='Train')
+            if 'test_samples' in data.columns:
+                ax_samples.plot(data['epoch'], data['test_samples'], label='Test')
+            ax_samples.set_xlabel('Epoch')
+            ax_samples.set_ylabel('Number of Samples')
+            ax_samples.set_title(f'Training Progress - Dataset Size\nTime: {data.iloc[-1]["elapsed_time_formatted"]}')
+            ax_samples.legend()
+            ax_samples.grid(True)
+
+        anim_samples = animation.FuncAnimation(fig_samples, update_samples, frames=len(log_df))
+        anim_samples.save(os.path.join(fig_dir, f'sample_size_progress_{seq}.gif'))
+        plt.close()
+
+        # Learning Rate Progress Animation
+        fig_lr, ax_lr = plt.subplots(figsize=(10, 6))
+        def update_lr(frame):
+            ax_lr.clear()
+            data = log_df.iloc[:frame+1]
+            ax_lr.plot(data['epoch'], data['learning_rate'])
+            ax_lr.set_xlabel('Epoch')
+            ax_lr.set_ylabel('Learning Rate')
+            ax_lr.set_title(f'Training Progress - Learning Rate\nTime: {data.iloc[-1]["elapsed_time_formatted"]}')
+            ax_lr.grid(True)
+            ax_lr.set_yscale('log')
+
+        anim_lr = animation.FuncAnimation(fig_lr, update_lr, frames=len(log_df))
+        anim_lr.save(os.path.join(fig_dir, f'learning_rate_progress_{seq}.gif'))
+        plt.close()
+
+    def save_training_files(self):
+        """Move training files to organized directory structure."""
+        source_files = [
+            f'{self.dataset_name}_Last_testing.csv',
+            f'{self.dataset_name}_Last_training.csv',
+            f'BestHistogram_{self.dataset_name}_components.pkl'
+        ]
+
+        for file in source_files:
+            if os.path.exists(file):
+                dest_path = os.path.join(self.log_dir, file)
+                shutil.move(file, dest_path)
+                logger.info(f"Moved {file} to {dest_path}")
+
+    def load_previous_training_data(self):
+        """Load previous training data from disk with size verification."""
+        training_data_path = os.path.join(self.log_dir, f'{self.dataset_name}_Last_training.csv')
+        if os.path.exists(training_data_path):
+            previous_data = pd.read_csv(training_data_path)
+            logger.info(f"Loading previous training data from {training_data_path}: {len(previous_data)} samples")
+            features = torch.tensor(previous_data.drop('target', axis=1).values).float().to(self.device)
+            labels = torch.tensor(previous_data['target'].values).long().to(self.device)
+            self.classifier.update_data(features, labels)
+            return True
+        return False
+
+    def train(self, train_loader: DataLoader, val_loader: Optional[DataLoader] = None) -> Dict:
         """Complete training pipeline."""
         logger.info("Training CNN feature extractor...")
         cnn_history = self.train_feature_extractor(
@@ -535,28 +717,98 @@ class AdaptiveCNNDBNN:
         )
 
         logger.info("Extracting features for DBNN...")
-        train_features = []
-        train_labels = []
+        new_features = []
+        new_labels = []
 
         self.feature_extractor.eval()
         with torch.no_grad():
             for images, labels in tqdm(train_loader, desc="Extracting features"):
                 images = images.to(self.device)
                 features = self.extract_features(images)
-                train_features.append(features)
-                train_labels.append(labels.to(self.device))
+                new_features.append(features)
+                new_labels.append(labels.to(self.device))
 
-        train_features = torch.cat(train_features, dim=0)
-        train_labels = torch.cat(train_labels, dim=0)
+        new_features = torch.cat(new_features, dim=0)
+        new_labels = torch.cat(new_labels, dim=0)
+
+        # Combine with accumulated data
+        if self.accumulated_features is not None:
+            train_features = torch.cat([self.accumulated_features, new_features], dim=0)
+            train_labels = torch.cat([self.accumulated_labels, new_labels], dim=0)
+            logger.info(f"Combined {len(self.accumulated_labels)} previous samples with {len(new_labels)} new samples")
+        else:
+            train_features = new_features
+            train_labels = new_labels
+            logger.info(f"Starting with {len(new_labels)} new samples")
+
+        # Update accumulated data
+        self.accumulated_features = train_features
+        self.accumulated_labels = train_labels
+
+        # Accumulate with previous data if exists
+        training_data_path = os.path.join(self.log_dir, f'{self.dataset_name}_training_data.csv')
+        if os.path.exists(training_data_path):
+            previous_data = pd.read_csv(training_data_path)
+            prev_features = torch.tensor(previous_data.drop('target', axis=1).values).float().to(self.device)
+            prev_labels = torch.tensor(previous_data['target'].values).long().to(self.device)
+
+            # Concatenate previous and new data
+            train_features = torch.cat([prev_features, new_features], dim=0)
+            train_labels = torch.cat([prev_labels, new_labels], dim=0)
+        else:
+            train_features = new_features
+            train_labels = new_labels
+
+        # Save accumulated training data
+        features_df = pd.DataFrame(train_features.cpu().numpy())
+        features_df.columns = [f'feature_{i}' for i in range(self.feature_dims)]
+        features_df['target'] = train_labels.cpu().numpy()
+        features_df.to_csv(training_data_path, index=False)
+        logger.info(f"Saved accumulated training data to {training_data_path}")
 
         self.classifier.update_data(train_features, train_labels)
-        logger.info("Training DBNN classifier...")
+        logger.info(f"Training DBNN classifier with {len(train_labels)} samples...")
         dbnn_results = self.classifier.adaptive_fit_predict()
+
+        self.save_training_files()
+        self.create_training_animations()  # Create animations after training is complete
 
         return {
             'cnn_history': cnn_history,
             'dbnn_results': dbnn_results
         }
+
+    def create_final_visualization(self, train_features: torch.Tensor, train_labels: torch.Tensor,
+                                 test_features: torch.Tensor, test_labels: torch.Tensor):
+        """Create t-SNE visualization of final feature space."""
+        train_data = pd.DataFrame(train_features.cpu().numpy())
+        train_data.columns = [f'feature_{i}' for i in range(train_features.shape[1])]
+        train_data['target'] = train_labels.cpu().numpy()
+        train_data['set'] = 'train'
+
+        test_data = pd.DataFrame(test_features.cpu().numpy())
+        test_data.columns = [f'feature_{i}' for i in range(test_features.shape[1])]
+        test_data['target'] = test_labels.cpu().numpy()
+        test_data['set'] = 'test'
+
+        # Save the final feature data
+        os.makedirs(self.log_dir, exist_ok=True)
+        train_data.to_csv(os.path.join(self.log_dir, f'{self.dataset_name}_final_train.csv'), index=False)
+        test_data.to_csv(os.path.join(self.log_dir, f'{self.dataset_name}_final_test.csv'), index=False)
+
+        # Create conf file for visualization
+        conf_data = {
+            'file_path': os.path.join(self.log_dir, f'{self.dataset_name}_final_train.csv'),
+            'target_column': 'target',
+            'column_names': train_data.columns.tolist()
+        }
+        with open(os.path.join(self.log_dir, f'{self.dataset_name}.conf'), 'w') as f:
+            json.dump(conf_data, f, indent=4)
+
+        # Create visualizations
+        visualizer = EpochVisualizer(os.path.join(self.log_dir, f'{self.dataset_name}.conf'))
+        visualizer.create_visualizations(0)  # Use epoch 0 as final state
+
     def _save_checkpoint(self, checkpoint_dir: str, is_best: bool = False):
         os.makedirs(checkpoint_dir, exist_ok=True)
         checkpoint = {
@@ -627,11 +879,19 @@ class AdaptiveCNNDBNN:
                         correct_predictions += torch.sum(pos_sim > neg_sim).item()
                         total_samples += anchors.size(0)
 
+            # Training loop...
+            train_loss = epoch_loss / valid_batches if valid_batches > 0 else float('inf')
+            train_acc = (correct_predictions / total_samples) * 100 if total_samples > 0 else 0
+
+
             if valid_batches > 0:
                 avg_loss = epoch_loss / valid_batches
                 accuracy = (correct_predictions / total_samples) * 100 if total_samples > 0 else 0
                 history['train_loss'].append(avg_loss)
 
+                # Validation metrics
+                val_loss=None
+                val_acc =None
                 if val_loader is not None:
                     val_loss, val_acc = self._validate_feature_extractor(val_loader, criterion)
                     history['val_loss'].append(val_loss)
@@ -639,6 +899,8 @@ class AdaptiveCNNDBNN:
                               f'Val Loss = {val_loss:.4f}, Val Acc = {val_acc:.2f}%')
                 else:
                     logger.info(f'Epoch {epoch + 1}: Loss = {avg_loss:.4f}, Acc = {accuracy:.2f}%')
+                self.log_training_metrics(epoch, train_loss, train_acc, val_loss, val_acc)
+
 
                 # Save checkpoint silently if it's the best model
                 if avg_loss < best_loss:
@@ -750,6 +1012,91 @@ class AdaptiveCNNDBNN:
 
         logger.info(f"Model loaded from {path}")
 
+    def get_top_predictions(self, logits: torch.Tensor, n_top: int = 2) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Get top N predictions and their probabilities."""
+        if logits.dim() == 1:
+            logits = logits.unsqueeze(0)  # Add batch dimension if missing
+
+        probabilities = F.softmax(logits, dim=-1)  # Use last dimension for softmax
+        top_probs, top_indices = torch.topk(probabilities, n_top, dim=-1)
+
+        return top_indices, top_probs
+
+    def evaluate_prediction_confidence(self, top_probs: torch.Tensor, true_label: torch.Tensor,
+                                    predicted_label: torch.Tensor) -> str:
+        confidence_threshold = 1.5 / self.config['dataset']['num_classes']
+        if top_probs[0] - top_probs[1] < confidence_threshold:
+            return 'Uncertain'
+        return 'Passed' if predicted_label == true_label else 'Failed'
+
+    def save_predictions(self, loader: DataLoader, dataset_type: str, output_dir: str,
+                        include_evaluation: bool = False):
+        """Corrected prediction saving with proper classifier access."""
+        metadata = []
+        if hasattr(loader.dataset, 'image_files'):
+            metadata = [{
+                'filename': os.path.basename(f),
+                'path': f,
+                'id': os.path.splitext(os.path.basename(f))[0]
+            } for f in loader.dataset.image_files]
+        metadata_df = pd.DataFrame(metadata)
+
+        predictions_list = []
+        self.feature_extractor.eval()
+        with torch.no_grad():
+            for images, labels in tqdm(loader, desc=f"Predicting {dataset_type}"):
+                images = images.to(self.device)
+                features = self.extract_features(images)
+                # Use predict method instead of calling classifier directly
+                logits = self.classifier.predict(features)
+                top_indices, top_probs = self.get_top_predictions(logits)
+
+                for idx in range(len(images)):
+                    result = {
+                        'predicted_class': top_indices[idx][0].item(),
+                        'confidence_top1': top_probs[idx][0].item(),
+                        'predicted_class2': top_indices[idx][1].item(),
+                        'confidence_top2': top_probs[idx][1].item(),
+                        'true_label': labels[idx].item()
+                    }
+
+                    if include_evaluation:
+                        result['status'] = self.evaluate_prediction_confidence(
+                            top_probs[idx],
+                            labels[idx],
+                            top_indices[idx][0]
+                        )
+                    predictions_list.append(result)
+
+        predictions_df = pd.DataFrame(predictions_list)
+        final_df = pd.concat([metadata_df, predictions_df], axis=1)
+
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, f'{dataset_type}_predictions.csv')
+        final_df.to_csv(output_path, index=False)
+        logger.info(f"Saved {dataset_type} predictions to {output_path}")
+
+        return final_df
+
+    def handle_predictions(self, train_loader: DataLoader, test_loader: Optional[DataLoader] = None):
+        mode = self.config['execution_flags']['mode']
+        output_dir = os.path.join('predictions', self.config['dataset']['name'])
+
+        if mode == "train_and_predict":
+            if train_loader:
+                self.save_predictions(train_loader, 'train', output_dir, include_evaluation=True)
+            if test_loader:
+                self.save_predictions(test_loader, 'test', output_dir, include_evaluation=True)
+
+        elif mode == "predict_only":
+            combined_dataset = ConcatDataset([train_loader.dataset, test_loader.dataset]) if test_loader else train_loader.dataset
+            combined_loader = DataLoader(
+                combined_dataset,
+                batch_size=self.config['training']['batch_size'],
+                num_workers=self.config['training']['num_workers'],
+                pin_memory=True
+            )
+            self.save_predictions(combined_loader, 'full', output_dir, include_evaluation=False)
 
 def setup_logging(log_dir='logs'):
     """Setup logging configuration."""
@@ -774,6 +1121,7 @@ def setup_logging(log_dir='logs'):
     logger.info(f"Logging setup complete. Log file: {log_file}")
 
     return logger
+
 
 def prepare_custom_data(config: Dict, use_cpu: bool = False) -> Tuple[str, str]:
     logger.info("Preparing custom dataset...")
@@ -1166,7 +1514,7 @@ def main(args=None):
         )
 
         transform = get_transforms(config)
-        train_dataset, _ = get_dataset(config, transform)
+        train_dataset, test_dataset = get_dataset(config, transform)
         train_loader = DataLoader(
             train_dataset,
             batch_size=config['training']['batch_size'],
@@ -1175,8 +1523,22 @@ def main(args=None):
             pin_memory=device.type=='cuda'
         )
 
+
+        test_loader = DataLoader(
+            test_dataset,
+            batch_size=config['training']['batch_size'],
+            shuffle=False,
+            num_workers=config['training']['num_workers'],
+            pin_memory=device.type=='cuda'
+        )
         results = model.train(train_loader)
         print("Training completed successfully")
+
+        if config['execution_flags']['mode'] != "train_only":
+            model.handle_predictions(train_loader, test_loader)
+
+        visualizer = EpochVisualizer(f"{config['dataset']['name']}.conf")
+        visualizer.create_visualizations(0)  # Pass 0 as epoch number for final visualization
 
     except Exception as e:
         print(f"Error: {str(e)}")
