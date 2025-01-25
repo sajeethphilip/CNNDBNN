@@ -1027,36 +1027,46 @@ def get_transforms(config: Dict, is_train: bool = True) -> transforms.Compose:
         return transforms.Compose(transform_list)
 
     components = aug_config.get('components', {})
+    image_size = config['dataset']['input_size']
+    min_dim = min(image_size[0], image_size[1])
 
-    if components.get('resize', True) and 'input_size' in config['dataset']:
-        transform_list.append(transforms.Resize(config['dataset']['input_size']))
+    if components.get('resize', {}).get('enabled', True):
+        transform_list.append(transforms.Resize(image_size))
 
     if is_train:
         if components.get('random_crop', {}).get('enabled', False):
-            transform_list.append(transforms.RandomCrop(components['random_crop']['size']))
-        if components.get('horizontal_flip', False):
+            crop_config = components['random_crop']
+            crop_size = crop_config['size'] if isinstance(crop_config['size'], int) else min(crop_config['size'])
+            crop_size = min(crop_size, min_dim)
+            transform_list.append(transforms.RandomCrop(crop_size))
+
+        if components.get('horizontal_flip', {}).get('enabled', False):
             transform_list.append(transforms.RandomHorizontalFlip())
-        if components.get('vertical_flip', False):
+
+        if components.get('vertical_flip', {}).get('enabled', False):
             transform_list.append(transforms.RandomVerticalFlip())
+
         if components.get('random_rotation', {}).get('enabled', False):
             transform_list.append(transforms.RandomRotation(components['random_rotation']['degrees']))
+
         if components.get('color_jitter', {}).get('enabled', False):
-            jitter_params = components['color_jitter']['params']
-            transform_list.append(transforms.ColorJitter(**jitter_params))
+            transform_list.append(transforms.ColorJitter(**components['color_jitter']['params']))
     else:
         if components.get('center_crop', {}).get('enabled', False):
-            transform_list.append(transforms.CenterCrop(components['center_crop']['size']))
+            crop_config = components['center_crop']
+            crop_size = crop_config['size'] if isinstance(crop_config['size'], int) else min(crop_config['size'])
+            crop_size = min(crop_size, min_dim)
+            transform_list.append(transforms.CenterCrop(crop_size))
 
     transform_list.append(transforms.ToTensor())
 
-    if components.get('normalize', True) and 'mean' in config['dataset'] and 'std' in config['dataset']:
+    if components.get('normalize', {}).get('enabled', True):
         transform_list.append(transforms.Normalize(
             config['dataset']['mean'],
             config['dataset']['std']
         ))
 
     return transforms.Compose(transform_list)
-
 
 
 def plot_training_history(history: Dict, save_path: Optional[str] = None):
