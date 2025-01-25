@@ -744,26 +744,36 @@ def get_default_config() -> Dict:
             'num_workers': 4
         },
         'augmentation': {
-            'train': {
+            'enabled': True,
+            'components': {
+                'normalize': True,
+                'resize': True,
                 'horizontal_flip': False,
                 'vertical_flip': False,
-                'random_rotation': 10,
-                'random_crop': False,
-                'crop_size': 28
-            },
-            'test': {
-                'center_crop': False,
-                'crop_size': 28
+                'random_rotation': {
+                    'enabled': False,
+                    'degrees': 10
+                },
+                'random_crop': {
+                    'enabled': False,
+                    'size': 28
+                },
+                'center_crop': {
+                    'enabled': False,
+                    'size': 28
+                },
+                'color_jitter': {
+                    'enabled': False,
+                    'params': {
+                        'brightness': 0.2,
+                        'contrast': 0.2,
+                        'saturation': 0.2,
+                        'hue': 0.1
+                    }
+                }
             }
         }
     }
-
-    csv_file, conf_file = prepare_mnist_data(config)
-
-    # Verify files were created
-    if not os.path.exists(csv_file) or not os.path.exists(conf_file):
-        raise RuntimeError(f"Failed to create required files: {csv_file}, {conf_file}")
-
     return config
 
 def load_config(config_path: str) -> Dict:
@@ -779,37 +789,42 @@ def load_config(config_path: str) -> Dict:
 
     return config
 
-def get_transforms(config: Dict, is_train: bool = True):
+def get_transforms(config: Dict, is_train: bool = True) -> transforms.Compose:
     transform_list = []
+    aug_config = config.get('augmentation', {})
 
-    aug_config = config['augmentation']['train' if is_train else 'test']
+    if not aug_config.get('enabled', True):
+        transform_list.append(transforms.ToTensor())
+        return transforms.Compose(transform_list)
 
-    # Resize first
-    if 'input_size' in config['dataset']:
+    components = aug_config.get('components', {})
+
+    if components.get('resize', True) and 'input_size' in config['dataset']:
         transform_list.append(transforms.Resize(config['dataset']['input_size']))
 
-    # Training augmentations
     if is_train:
-        if aug_config.get('horizontal_flip', False):
+        if components.get('random_crop', {}).get('enabled', False):
+            transform_list.append(transforms.RandomCrop(components['random_crop']['size']))
+        if components.get('horizontal_flip', False):
             transform_list.append(transforms.RandomHorizontalFlip())
-        if aug_config.get('vertical_flip', False):
+        if components.get('vertical_flip', False):
             transform_list.append(transforms.RandomVerticalFlip())
-        if aug_config.get('random_rotation'):
-            transform_list.append(transforms.RandomRotation(aug_config['random_rotation']))
-        if aug_config.get('random_crop'):
-            transform_list.append(transforms.RandomCrop(aug_config['crop_size']))
-        if 'color_jitter' in aug_config:
-            transform_list.append(transforms.ColorJitter(**aug_config['color_jitter']))
+        if components.get('random_rotation', {}).get('enabled', False):
+            transform_list.append(transforms.RandomRotation(components['random_rotation']['degrees']))
+        if components.get('color_jitter', {}).get('enabled', False):
+            jitter_params = components['color_jitter']['params']
+            transform_list.append(transforms.ColorJitter(**jitter_params))
     else:
-        # Test transforms
-        if aug_config.get('center_crop'):
-            transform_list.append(transforms.CenterCrop(aug_config['crop_size']))
+        if components.get('center_crop', {}).get('enabled', False):
+            transform_list.append(transforms.CenterCrop(components['center_crop']['size']))
 
     transform_list.append(transforms.ToTensor())
 
-    if 'mean' in config['dataset'] and 'std' in config['dataset']:
-        transform_list.append(transforms.Normalize(config['dataset']['mean'],
-                                                config['dataset']['std']))
+    if components.get('normalize', True) and 'mean' in config['dataset'] and 'std' in config['dataset']:
+        transform_list.append(transforms.Normalize(
+            config['dataset']['mean'],
+            config['dataset']['std']
+        ))
 
     return transforms.Compose(transform_list)
 
