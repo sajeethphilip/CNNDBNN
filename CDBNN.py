@@ -1343,16 +1343,25 @@ class AdaptiveCNNDBNN:
         logger.info(f"Model loaded from {path}")
 
     def get_top_predictions(self, logits: torch.Tensor, n_top: int = 2) -> Tuple[torch.Tensor, torch.Tensor]:
-            """Get top N predictions and their probabilities."""
-            if logits.dim() == 1:
-                logits = logits.unsqueeze(0)  # Add batch dimension
+                """Get top N predictions and their probabilities."""
+                if logits.dim() == 1:
+                    logits = logits.unsqueeze(0)  # Add batch dimension
 
-            # Convert logits to float32 before softmax
-            logits = logits.to(dtype=torch.float32)
-            probabilities = F.softmax(logits, dim=-1)  # Use last dimension for softmax
-            top_probs, top_indices = torch.topk(probabilities, n_top, dim=-1)
+                # Convert logits to float32 before softmax
+                logits = logits.to(dtype=torch.float32)
+                probabilities = F.softmax(logits, dim=-1)  # Use last dimension for softmax
 
-            return top_indices, top_probs
+                # Ensure n_top doesn't exceed the number of classes
+                n_top = min(n_top, probabilities.size(-1))
+
+                top_probs, top_indices = torch.topk(probabilities, n_top, dim=-1)
+
+                # If we only got one prediction, duplicate it to maintain shape consistency
+                if top_indices.size(-1) == 1:
+                    top_indices = top_indices.repeat(1, 2)
+                    top_probs = torch.cat([top_probs, torch.zeros_like(top_probs)], dim=-1)
+
+                return top_indices, top_probs
 
     def evaluate_prediction_confidence(self, top_probs: torch.Tensor, true_label: torch.Tensor,
                                     predicted_label: torch.Tensor) -> str:
