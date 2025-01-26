@@ -54,6 +54,115 @@ class DatasetProcessor:
         else:
             self.config = None
 
+    def edit_conf_file(self, conf_path: str) -> dict:
+        """Edit configuration file using system text editor."""
+        if os.name == 'nt':
+            os.system(f'notepad {conf_path}')
+        elif os.name == 'posix':
+            editor = os.environ.get('EDITOR', 'nano')
+            os.system(f'{editor} {conf_path}')
+
+        try:
+            with open(conf_path, 'r') as f:
+                return json.load(f)
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON in conf file: {e}")
+            raise
+
+    def create_dataset_config(self, train_dir: str, test_dir: str) -> dict:
+        """Create initial dataset configuration."""
+        first_image_path = None
+        for root, _, files in os.walk(train_dir):
+            for file in files:
+                if file.endswith(('.png', '.jpg', '.jpeg')):
+                    first_image_path = os.path.join(root, file)
+                    break
+            if first_image_path:
+                break
+
+        with Image.open(first_image_path) as img:
+            input_size = list(img.size)
+            img_tensor = transforms.ToTensor()(img)
+            in_channels = img_tensor.shape[0]
+
+        num_classes = len([d for d in os.listdir(train_dir) if os.path.isdir(os.path.join(train_dir, d))])
+        mean = [0.485, 0.456, 0.406] if in_channels == 3 else [0.5]
+        std = [0.229, 0.224, 0.225] if in_channels == 3 else [0.5]
+
+        return {
+            "dataset": {
+                "name": self.datafile if self.datatype == 'torchvision' else os.path.basename(os.path.abspath(self.datafile)),
+                "type": self.datatype,
+                "in_channels": in_channels,
+                "num_classes": num_classes,
+                "input_size": input_size,
+                "mean": mean,
+                "std": std,
+                "train_dir": train_dir,
+                "test_dir": test_dir
+            },
+            "model": {
+                "feature_dims": 128,
+                "learning_rate": 0.001
+            },
+            "training": {
+                "batch_size": 32,
+                "epochs": 20,
+                "num_workers": 4,
+                "cnn_training": {
+                    "resume": True,
+                    "fresh_start": False,
+                    "min_loss_threshold": 0.01,
+                    "checkpoint_dir": "Model/cnn_checkpoints"
+                }
+            },
+            "execution_flags": {
+                "mode": "train_and_predict",
+                "use_previous_model": True,
+                "fresh_start": False
+            }
+        }
+
+    def handle_config_files(self) -> dict:
+        """Handle creation and editing of all configuration files."""
+        if self.datatype == 'torchvision':
+            dataset_name = self.datafile.upper()
+        else:
+            dataset_name = os.path.basename(os.path.abspath(self.datafile))
+
+        train_dir, test_dir = self.process()
+
+        dataset_config_path = os.path.join(self.output_dir, f"{dataset_name}.json")
+        if os.path.exists(dataset_config_path):
+            print(f"\nDataset config found at: {dataset_config_path}")
+            if input("Would you like to edit the dataset config? (y/n): ").lower() == 'y':
+                self.config = self.edit_conf_file(dataset_config_path)
+            else:
+                with open(dataset_config_path, 'r') as f:
+                    self.config = json.load(f)
+        else:
+            print("\nCreating new dataset configuration...")
+            self.config = self.create_dataset_config(train_dir, test_dir)
+            os.makedirs(self.output_dir, exist_ok=True)
+            with open(dataset_config_path, 'w') as f:
+                json.dump(self.config, f, indent=4)
+            print(f"Created dataset config at: {dataset_config_path}")
+            if input("Would you like to edit the dataset config? (y/n): ").lower() == 'y':
+                self.config = self.edit_conf_file(dataset_config_path)
+
+        return self.config
+
+    def edit_data_config(self):
+        """Edit the data configuration file."""
+        config_path = os.path.join(self.output_dir, f"{self.datafile}.json")
+        if not os.path.exists(config_path):
+            print(f"Warning: Config file not found at {config_path}")
+            return False
+
+        print(f"\nEditing data config at: {config_path}")
+        self.config = self.edit_conf_file(config_path)  # Use the class method instead
+        return True
+
 
     def get_transforms(self, config: Dict, is_train: bool = True) -> transforms.Compose:
         transform_list = []
@@ -120,19 +229,22 @@ class DatasetProcessor:
                                      for f in os.listdir(train_dir))
                 test_has_images = any(f.endswith(('.png', '.jpg', '.jpeg'))
                                     for f in os.listdir(test_dir))
-
                 if train_has_images and test_has_images:
                     print("Valid dataset folder structure detected. Using existing data.")
-                    return train_dir, test_dir
 
-        # If not a valid folder structure, proceed with normal processing
+        # Get train and test directories based on datatype
         if self.datatype == "torchvision":
-            return self._process_torchvision()
+            train_dir, test_dir = self._process_torchvision()
         elif self.datatype == "custom":
-            return self._process_custom()
+            train_dir, test_dir = self._process_custom()
         else:
             raise ValueError("Unsupported datatype. Use 'torchvision' or 'custom'.")
 
+        # Offer to edit config after processing
+        if input("\nWould you like to edit the data configuration? (y/n): ").lower() == 'y':
+            self.edit_data_config()
+
+        return train_dir, test_dir
 
     def _process_torchvision(self):
         dataset_class = getattr(datasets, self.datafile, None)
@@ -805,13 +917,18 @@ class AdaptiveCNNDBNN:
         print(f"Created DBNN configuration file: {config_path}")
         return config_path
 
+
     def sync_configs(self):
         prefix = self.get_output_prefix()
         dataset_name = self.config['dataset']['name'].lower()
         dbnn_config_path = f"{prefix}_{dataset_name}.conf"
         csv_path = f"{prefix}_{dataset_name}.csv"
 
-        # Default DBNN configuration
+        # Setup paths
+        data_dir = "data"
+        os.makedirs(data_dir, exist_ok=True)
+        json_path = os.path.join(data_dir, f"{dataset_name}.json")
+
         default_config = {
             'file_path': csv_path,
             'column_names': [f'feature_{i}' for i in range(self.feature_dims)] + ['target'],
@@ -837,13 +954,11 @@ class AdaptiveCNNDBNN:
             'modelType': 'Histogram'
         }
 
-        # Load existing config if it exists
         existing_config = {}
         if os.path.exists(dbnn_config_path):
             with open(dbnn_config_path, 'r') as f:
                 existing_config = json.load(f)
 
-        # Update default config with existing values
         def deep_update(d, u):
             for k, v in u.items():
                 if isinstance(v, dict):
@@ -854,24 +969,26 @@ class AdaptiveCNNDBNN:
 
         config = deep_update(default_config, existing_config)
 
-        # Update with new values from JSON if specified
         if 'dbnn' in self.config:
             config = deep_update(config, self.config['dbnn'])
 
-        # Save updated config
         with open(dbnn_config_path, 'w') as f:
             json.dump(config, f, indent=4)
 
-        # Open in default text editor
-        edit = input("Would you like to edit the DBNN configuration? (y/n): ").lower() == 'y'
-        if edit:
-            if os.name == 'nt':  # Windows
-                os.system(f'notepad {dbnn_config_path}')
-            elif os.name == 'posix':  # Linux/Mac
-                editor = os.environ.get('EDITOR', 'nano')  # Default to nano if EDITOR not set
-                os.system(f'{editor} {dbnn_config_path}')
+        processor = DatasetProcessor(self.dataset_name)
 
-            # Reload config after editing
+        edit_json = input("Would you like to edit the JSON configuration? (y/n): ").lower() == 'y'
+        if edit_json:
+            if os.path.exists(json_path):
+                processor.edit_conf_file(json_path)
+                with open(json_path, 'r') as f:
+                    self.config = json.load(f)
+            else:
+                print(f"Warning: JSON config file not found at {json_path}")
+
+        edit_conf = input("Would you like to edit the DBNN configuration? (y/n): ").lower() == 'y'
+        if edit_conf:
+            processor.edit_conf_file(dbnn_config_path)
             with open(dbnn_config_path, 'r') as f:
                 config = json.load(f)
 
@@ -1549,54 +1666,23 @@ def plot_confusion_matrix(true_labels: List, predictions: List,
 
 def main(args=None):
     try:
-        # Load config
         if args and args.config:
-            config_path = args.config
-            with open(config_path, 'r') as f:
+            with open(args.config, 'r') as f:
                 config = json.load(f)
         else:
-            # Get dataset info and create config
             datafile = input("Enter dataset name or path (default: MNIST): ").strip() or "MNIST"
             datatype = input("Enter dataset type (torchvision/custom) (default: torchvision): ").strip() or "torchvision"
 
-            if datatype == 'torchvision':
-                datafile = datafile.upper()
-                dataset_name = datafile
-            else:
-                dataset_name = os.path.basename(os.path.abspath(datafile))
+            processor = DatasetProcessor(datafile=datafile, datatype=datatype)
+            config = processor.config
+            transform = processor.get_transforms(config)
 
-            config_path = os.path.join("data", f"{dataset_name}.json")
-
-            if os.path.exists(config_path):
-                overwrite = input(f"Config file {config_path} exists. Overwrite? (y/n): ").lower() == 'y'
-                if not overwrite:
-                    with open(config_path, 'r') as f:
-                        config = json.load(f)
-                else:
-                    processor = DatasetProcessor(datafile=datafile, datatype=datatype)
-                    train_dir, test_dir = processor.process()
-                    processor.generate_json(train_dir, test_dir)
-                    with open(config_path, 'r') as f:
-                        config = json.load(f)
-            else:
-                processor = DatasetProcessor(datafile=datafile, datatype=datatype)
-                train_dir, test_dir = processor.process()
-                processor.generate_json(train_dir, test_dir)
-                with open(config_path, 'r') as f:
-                    config = json.load(f)
-        # Create processor instance
-        processor = DatasetProcessor(config['dataset']['name'])
-
-        # Get transforms first
-        transform = processor.get_transforms(config)
-        # Ask about dataset merging
         merge_datasets = input("Merge train and test datasets for adaptive learning? (y/n, default: n): ").lower() == 'y'
         config['training']['merge_train_test'] = merge_datasets
 
         device = torch.device('cuda' if torch.cuda.is_available() and not config['execution_flags'].get('cpu', False) else 'cpu')
         print(f"Using device: {device}")
 
-        # First, process the data and extract features using CNN
         train_dataset, test_dataset = get_dataset(config, transform)
         train_loader = DataLoader(
             train_dataset,
@@ -1606,15 +1692,16 @@ def main(args=None):
             pin_memory=device.type=='cuda'
         )
 
-        test_loader = DataLoader(
-            test_dataset,
-            batch_size=config['training']['batch_size'],
-            shuffle=False,
-            num_workers=config['training']['num_workers'],
-            pin_memory=device.type=='cuda'
-        )
+        test_loader = None
+        if test_dataset:
+            test_loader = DataLoader(
+                test_dataset,
+                batch_size=config['training']['batch_size'],
+                shuffle=False,
+                num_workers=config['training']['num_workers'],
+                pin_memory=device.type=='cuda'
+            )
 
-        # Train CNN and extract features
         model = AdaptiveCNNDBNN(
             dataset_name=config['dataset']['name'].lower(),
             in_channels=config['dataset']['in_channels'],
@@ -1623,6 +1710,12 @@ def main(args=None):
             learning_rate=config['model']['learning_rate'],
             config=config
         )
+
+        if input("\nReview configurations before training? (y/n): ").lower() == 'y':
+            if input("Edit dataset config? (y/n): ").lower() == 'y':
+                processor.edit_data_config()
+            if input("Edit DBNN config? (y/n): ").lower() == 'y':
+                model.sync_configs()
 
         results = model.train(train_loader)
         print("Training completed successfully")
