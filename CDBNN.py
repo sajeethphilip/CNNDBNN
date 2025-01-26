@@ -517,17 +517,13 @@ class AdaptiveCNNDBNN:
         self.log_dir = os.path.join('Traininglog', self.dataset_name)
         os.makedirs(self.log_dir, exist_ok=True)
 
+
+        # Prepare CNN features first
+        csv_path, conf_path = self.prepare_custom_data()
+
+        # Sync CNN and DBNN configs
         setup_dbnn_environment(self.device, self.learning_rate)
-
-        self.feature_extractor = FeatureExtractorCNN(
-            in_channels=in_channels,
-            feature_dims=feature_dims
-        ).to(device)
-
-        self.optimizer = optim.Adam(
-            self.feature_extractor.parameters(),
-            lr=learning_rate
-        )
+        self.sync_configs()
 
         self.classifier = CNNDBNN(
             dataset_name=dataset_name,
@@ -547,6 +543,226 @@ class AdaptiveCNNDBNN:
         if not config['execution_flags'].get('fresh_start', False):
             self.load_previous_training_data()
             self._load_previous_model()
+
+    def prepare_custom_data(self) -> Tuple[str, str]:
+            """Prepare CNN features and configuration for DBNN"""
+            logger.info("Preparing custom dataset...")
+            dataset_name = self.config['dataset']['name'].lower()
+
+            compute_device = self.device
+            storage_device = torch.device('cpu')
+            scaler = torch.cuda.amp.GradScaler() if self.config['execution_flags'].get('mixed_precision') else None
+
+            # Load datasets with transforms
+            train_transform = get_transforms(self.config, is_train=True)
+            train_dataset = CustomImageDataset(
+                data_dir=self.config['dataset']['train_dir'],
+                transform=train_transform
+            )
+
+            # Setup feature extractor
+            self.feature_extractor = FeatureExtractorCNN(
+                in_channels=self.config['dataset']['in_channels'],
+                feature_dims=self.config['model']['feature_dims']
+            ).to(compute_device)
+
+            # Configure optimizer
+            optimizer_config = self.config['model']['optimizer']
+            optimizer_params = {
+                'lr': self.config['model']['learning_rate'],
+                'weight_decay': optimizer_config.get('weight_decay', 0)
+            }
+            if optimizer_config['type'] == 'SGD' and 'momentum' in optimizer_config:
+                optimizer_params['momentum'] = optimizer_config['momentum']
+
+            optimizer_class = getattr(optim, optimizer_config['type'])
+            self.optimizer = optimizer_class(self.feature_extractor.parameters(), **optimizer_params)
+
+            train_loader = DataLoader(
+                train_dataset,
+                batch_size=self.config['training']['batch_size'],
+                shuffle=True,
+                num_workers=self.config['training']['num_workers'],
+                pin_memory=True
+            )
+
+            # Extract features
+            logger.info("Extracting features...")
+            self.feature_extractor.eval()
+            features = []
+            labels = []
+
+            with torch.no_grad():
+                for images, batch_labels in tqdm(train_loader, desc="Feature extraction"):
+                    images = images.to(compute_device)
+                    if self.config['execution_flags'].get('mixed_precision'):
+                        with torch.cuda.amp.autocast():
+                            batch_features = self.feature_extractor(images)
+                    else:
+                        batch_features = self.feature_extractor(images)
+                    features.append(batch_features.to(storage_device).numpy())
+                    labels.append(batch_labels.numpy())
+
+            features = np.concatenate(features, axis=0)
+            labels = np.concatenate(labels, axis=0)
+
+            # Save features and config
+            csv_path = f"{dataset_name}.csv"
+            conf_path = f"{dataset_name}.conf"
+
+            feature_cols = {f'feature_{i}': features[:, i] for i in range(features.shape[1])}
+            feature_cols['target'] = labels
+            df = pd.DataFrame(feature_cols)
+            df.to_csv(csv_path, index=False)
+
+            custom_config = {
+                'file_path': csv_path,
+                'column_names': [f'feature_{i}' for i in range(features.shape[1])] + ['target'],
+                'target_column': 'target',
+                'separator': ',',
+                'has_header': True,
+                'likelihood_config': {
+                    'feature_group_size': 2,
+                    'max_combinations': 100,
+                    'bin_sizes': [20]
+                }
+            }
+
+            with open(conf_path, 'w') as f:
+                json.dump(custom_config, f, indent=4)
+
+            return csv_path, conf_path
+
+    def create_dbnn_config(self):
+        """Create DBNN configuration file from CNN config and dataset info"""
+        dataset_name = self.dataset_name.lower()
+        config_path = f"{dataset_name}.conf"
+
+        # Generate CSV path that will store extracted features
+        csv_path = f"{dataset_name}_features.csv"
+
+        # Create DBNN configuration
+        dbnn_config = {
+            'file_path': csv_path,
+            'column_names': [f'feature_{i}' for i in range(self.feature_dims)] + ['target'],
+            'target_column': 'target',
+            'separator': ',',
+            'has_header': True,
+            'likelihood_config': {
+                'feature_group_size': 2,
+                'max_combinations': min(100, self.feature_dims * (self.feature_dims - 1) // 2),
+                'bin_sizes': [20]
+            },
+            'active_learning': {
+                'tolerance': 1.0,
+                'cardinality_threshold_percentile': 95
+            },
+            'training_params': {
+                'trials': 100,
+                'cardinality_threshold': 0.9,
+                'cardinality_tolerance': 4,
+                'learning_rate': float(self.learning_rate),
+                'random_seed': 42,
+                'epochs': 1000,
+                'test_fraction': 0.2,
+                'enable_adaptive': True,
+                'compute_device': str(self.device),
+                'modelType': 'Histogram',
+                'use_interactive_kbd': False,
+                'Save_training_epochs': True,
+                'training_save_path': 'training_data'
+            },
+            'execution_flags': {
+                'train': True,
+                'train_only': False,
+                'predict': True,
+                'gen_samples': False,
+                'fresh_start': False,
+                'use_previous_model': True
+            }
+        }
+
+        # Save configuration to file
+        with open(config_path, 'w') as f:
+            json.dump(dbnn_config, f, indent=4)
+
+        print(f"Created DBNN configuration file: {config_path}")
+        return config_path
+
+    def sync_configs(self):
+        """Sync DBNN configuration with CNN JSON config"""
+        cnn_config = self.config
+        dataset_name = self.dataset_name.lower()
+        dbnn_config_path = f"{dataset_name}.conf"
+
+        # Load existing DBNN config if it exists
+        if os.path.exists(dbnn_config_path):
+            with open(dbnn_config_path, 'r') as f:
+                dbnn_config = json.load(f)
+        else:
+            dbnn_config = {}
+
+        # Sync training parameters
+        cnn_training = cnn_config.get('training', {})
+        dbnn_training = dbnn_config.setdefault('training_params', {})
+
+        # Map CNN config values to DBNN config
+        param_mapping = {
+            'epochs': ('epochs', 1000),
+            'batch_size': ('batch_size', 32),
+            'num_workers': ('num_workers', 4),
+        }
+
+        for cnn_key, (dbnn_key, default) in param_mapping.items():
+            dbnn_training[dbnn_key] = cnn_training.get(cnn_key, default)
+
+        # Sync optimizer settings
+        optimizer_config = cnn_config.get('model', {}).get('optimizer', {})
+        dbnn_training['learning_rate'] = optimizer_config.get('learning_rate', 0.001)
+        dbnn_training['weight_decay'] = optimizer_config.get('weight_decay', 1e-4)
+
+        # Sync early stopping
+        early_stopping = cnn_training.get('early_stopping', {})
+        dbnn_training['trials'] = early_stopping.get('patience', 5)
+        dbnn_training['min_delta'] = early_stopping.get('min_delta', 0.001)
+
+        # Sync execution flags
+        cnn_flags = cnn_config.get('execution_flags', {})
+        dbnn_flags = dbnn_config.setdefault('execution_flags', {})
+
+        flag_mapping = {
+            'fresh_start': 'fresh_start',
+            'use_gpu': 'use_gpu',
+            'mixed_precision': 'mixed_precision',
+            'debug_mode': 'debug_mode'
+        }
+
+        for cnn_flag, dbnn_flag in flag_mapping.items():
+            dbnn_flags[dbnn_flag] = cnn_flags.get(cnn_flag, False)
+
+        # Sync dataset parameters
+        dataset_config = cnn_config.get('dataset', {})
+        dbnn_dataset = dbnn_config.setdefault('dataset', {})
+        dbnn_dataset.update({
+            'name': dataset_config.get('name', dataset_name),
+            'input_size': dataset_config.get('input_size', [28, 28]),
+            'num_classes': dataset_config.get('num_classes', 10),
+            'in_channels': dataset_config.get('in_channels', 1)
+        })
+
+        # Update feature dimensions from CNN config
+        dbnn_config['likelihood_config'] = {
+            'feature_group_size': 2,
+            'max_combinations': min(100, self.feature_dims * (self.feature_dims - 1) // 2),
+            'bin_sizes': [20]
+        }
+
+        # Save synchronized config
+        with open(dbnn_config_path, 'w') as f:
+            json.dump(dbnn_config, f, indent=4)
+
+        print(f"Synchronized DBNN configuration saved to {dbnn_config_path}")
+        return dbnn_config
 
     def _load_previous_model(self):
         """Load both CNN and DBNN previous models."""
@@ -1013,14 +1229,16 @@ class AdaptiveCNNDBNN:
         logger.info(f"Model loaded from {path}")
 
     def get_top_predictions(self, logits: torch.Tensor, n_top: int = 2) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Get top N predictions and their probabilities."""
-        if logits.dim() == 1:
-            logits = logits.unsqueeze(0)  # Add batch dimension if missing
+            """Get top N predictions and their probabilities."""
+            if logits.dim() == 1:
+                logits = logits.unsqueeze(0)  # Add batch dimension
 
-        probabilities = F.softmax(logits, dim=-1)  # Use last dimension for softmax
-        top_probs, top_indices = torch.topk(probabilities, n_top, dim=-1)
+            # Convert logits to float32 before softmax
+            logits = logits.to(dtype=torch.float32)
+            probabilities = F.softmax(logits, dim=-1)  # Use last dimension for softmax
+            top_probs, top_indices = torch.topk(probabilities, n_top, dim=-1)
 
-        return top_indices, top_probs
+            return top_indices, top_probs
 
     def evaluate_prediction_confidence(self, top_probs: torch.Tensor, true_label: torch.Tensor,
                                     predicted_label: torch.Tensor) -> str:
@@ -1122,113 +1340,6 @@ def setup_logging(log_dir='logs'):
 
     return logger
 
-
-def prepare_custom_data(config: Dict, use_cpu: bool = False) -> Tuple[str, str]:
-    logger.info("Preparing custom dataset...")
-    dataset_name = config['dataset']['name'].lower()
-
-    # Set up devices and mixed precision if enabled
-    compute_device = torch.device('cuda' if torch.cuda.is_available() and not use_cpu else 'cpu')
-    storage_device = torch.device('cpu')
-    scaler = torch.cuda.amp.GradScaler() if config['execution_flags'].get('mixed_precision') else None
-
-    # Load datasets with appropriate transforms
-    train_transform = get_transforms(config, is_train=True)
-    train_dataset = CustomImageDataset(
-        data_dir=config['dataset']['train_dir'],
-        transform=train_transform
-    )
-
-    # Setup training components
-    feature_extractor = FeatureExtractorCNN(
-        in_channels=config['dataset']['in_channels'],
-        feature_dims=config['model']['feature_dims']
-    ).to(compute_device)
-
-    # Optimizer setup
-    optimizer_config = config['model']['optimizer']
-    optimizer_params = {
-        'lr': config['model']['learning_rate'],
-        'weight_decay': optimizer_config.get('weight_decay', 0)
-    }
-
-    # Add momentum only for SGD
-    if optimizer_config['type'] == 'SGD' and 'momentum' in optimizer_config:
-        optimizer_params['momentum'] = optimizer_config['momentum']
-
-    optimizer_class = getattr(optim, optimizer_config['type'])
-    optimizer = optimizer_class(feature_extractor.parameters(), **optimizer_params)
-
-    # Scheduler setup
-    scheduler_config = config['model']['scheduler']
-    scheduler_class = getattr(optim.lr_scheduler, scheduler_config['type'])
-    scheduler = scheduler_class(
-        optimizer,
-        step_size=scheduler_config['step_size'],
-        gamma=scheduler_config['gamma']
-    )
-
-    # Training loop with early stopping
-    best_loss = float('inf')
-    patience_counter = 0
-    early_stopping_config = config['training'].get('early_stopping', {})
-    patience = early_stopping_config.get('patience', 5)
-    min_delta = early_stopping_config.get('min_delta', 0.001)
-
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=config['training']['batch_size'],
-        shuffle=True,
-        num_workers=config['training']['num_workers'],
-        pin_memory=not use_cpu
-    )
-
-    # Extract features
-    logger.info("Extracting features...")
-    feature_extractor.eval()
-    features = []
-    labels = []
-
-    with torch.no_grad():
-        for images, batch_labels in tqdm(train_loader, desc="Feature extraction"):
-            images = images.to(compute_device)
-            if config['execution_flags'].get('mixed_precision'):
-                with torch.cuda.amp.autocast():
-                    batch_features = feature_extractor(images)
-            else:
-                batch_features = feature_extractor(images)
-            features.append(batch_features.to(storage_device).numpy())
-            labels.append(batch_labels.numpy())
-
-    features = np.concatenate(features, axis=0)
-    labels = np.concatenate(labels, axis=0)
-
-    # Save features and config
-    csv_path = f"{dataset_name}.csv"
-    conf_path = f"{dataset_name}.conf"
-
-    feature_cols = {f'feature_{i}': features[:, i] for i in range(features.shape[1])}
-    feature_cols['target'] = labels
-    df = pd.DataFrame(feature_cols)
-    df.to_csv(csv_path, index=False)
-
-    custom_config = {
-        'file_path': csv_path,
-        'column_names': [f'feature_{i}' for i in range(features.shape[1])] + ['target'],
-        'target_column': 'target',
-        'separator': ',',
-        'has_header': True,
-        'likelihood_config': {
-            'feature_group_size': 2,
-            'max_combinations': 100,
-            'bin_sizes': [20]
-        }
-    }
-
-    with open(conf_path, 'w') as f:
-        json.dump(custom_config, f, indent=4)
-
-    return csv_path, conf_path
 
 def prepare_mnist_data(config: Dict) -> None:
     """
@@ -1463,13 +1574,16 @@ def plot_confusion_matrix(true_labels: List, predictions: List,
 
 def main(args=None):
     try:
+        # Load config
         if args and args.config:
             config_path = args.config
             with open(config_path, 'r') as f:
                 config = json.load(f)
         else:
+            # Get dataset info and create config
             datafile = input("Enter dataset name or path (default: MNIST): ").strip() or "MNIST"
             datatype = input("Enter dataset type (torchvision/custom) (default: torchvision): ").strip() or "torchvision"
+
             if datatype == 'torchvision':
                 datafile = datafile.upper()
                 dataset_name = datafile
@@ -1483,7 +1597,6 @@ def main(args=None):
                 if not overwrite:
                     with open(config_path, 'r') as f:
                         config = json.load(f)
-                    print("Using existing configuration.")
                 else:
                     processor = DatasetProcessor(datafile=datafile, datatype=datatype)
                     train_dir, test_dir = processor.process()
@@ -1496,23 +1609,15 @@ def main(args=None):
                 processor.generate_json(train_dir, test_dir)
                 with open(config_path, 'r') as f:
                     config = json.load(f)
-       # Ask about dataset merging
+
+        # Ask about dataset merging
         merge_datasets = input("Merge train and test datasets for adaptive learning? (y/n, default: n): ").lower() == 'y'
         config['training']['merge_train_test'] = merge_datasets
 
-        # Rest of the training code remains the same
         device = torch.device('cuda' if torch.cuda.is_available() and not config['execution_flags'].get('cpu', False) else 'cpu')
         print(f"Using device: {device}")
 
-        model = AdaptiveCNNDBNN(
-            dataset_name=config['dataset']['name'].lower(),
-            in_channels=config['dataset']['in_channels'],
-            feature_dims=config['model']['feature_dims'],
-            device=device,
-            learning_rate=config['model']['learning_rate'],
-            config=config
-        )
-
+        # First, process the data and extract features using CNN
         transform = get_transforms(config)
         train_dataset, test_dataset = get_dataset(config, transform)
         train_loader = DataLoader(
@@ -1523,7 +1628,6 @@ def main(args=None):
             pin_memory=device.type=='cuda'
         )
 
-
         test_loader = DataLoader(
             test_dataset,
             batch_size=config['training']['batch_size'],
@@ -1531,19 +1635,26 @@ def main(args=None):
             num_workers=config['training']['num_workers'],
             pin_memory=device.type=='cuda'
         )
+
+        # Train CNN and extract features
+        model = AdaptiveCNNDBNN(
+            dataset_name=config['dataset']['name'].lower(),
+            in_channels=config['dataset']['in_channels'],
+            feature_dims=config['model']['feature_dims'],
+            device=device,
+            learning_rate=config['model']['learning_rate'],
+            config=config
+        )
+
         results = model.train(train_loader)
         print("Training completed successfully")
 
         if config['execution_flags']['mode'] != "train_only":
             model.handle_predictions(train_loader, test_loader)
 
-        visualizer = EpochVisualizer(f"{config['dataset']['name']}.conf")
-        visualizer.create_visualizations(0)  # Pass 0 as epoch number for final visualization
-
     except Exception as e:
         print(f"Error: {str(e)}")
         raise
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train AdaptiveCNNDBNN')
     parser.add_argument('--config', type=str, default=None,
