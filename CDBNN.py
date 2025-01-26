@@ -46,6 +46,69 @@ class DatasetProcessor:
         self.datatype = datatype
         self.output_dir = output_dir
 
+        # Load config if exists
+        config_path = os.path.join(output_dir, f"{datafile}.json")
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                self.config = json.load(f)
+        else:
+            self.config = None
+
+
+    def get_transforms(self, config: Dict, is_train: bool = True) -> transforms.Compose:
+        transform_list = []
+        if 'dataset' in config:
+            # Handle grayscale conversion for MNIST
+            if config['dataset']['name'].upper() == 'MNIST':
+                transform_list.append(transforms.Grayscale(num_output_channels=1))
+
+        aug_config = config.get('augmentation', {})
+        if not aug_config.get('enabled', True):
+            transform_list.append(transforms.ToTensor())
+            return transforms.Compose(transform_list)
+
+        components = aug_config.get('components', {})
+        image_size = config['dataset']['input_size']
+        min_dim = min(image_size[0], image_size[1])
+
+        if components.get('resize', {}).get('enabled', True):
+            transform_list.append(transforms.Resize(image_size))
+
+        if is_train:
+            if components.get('random_crop', {}).get('enabled', False):
+                crop_config = components['random_crop']
+                crop_size = crop_config['size'] if isinstance(crop_config['size'], int) else min(crop_config['size'])
+                crop_size = min(crop_size, min_dim)
+                transform_list.append(transforms.RandomCrop(crop_size))
+
+            if components.get('horizontal_flip', {}).get('enabled', False):
+                transform_list.append(transforms.RandomHorizontalFlip())
+
+            if components.get('vertical_flip', {}).get('enabled', False):
+                transform_list.append(transforms.RandomVerticalFlip())
+
+            if components.get('random_rotation', {}).get('enabled', False):
+                transform_list.append(transforms.RandomRotation(components['random_rotation']['degrees']))
+
+            if components.get('color_jitter', {}).get('enabled', False):
+                transform_list.append(transforms.ColorJitter(**components['color_jitter']['params']))
+        else:
+            if components.get('center_crop', {}).get('enabled', False):
+                crop_config = components['center_crop']
+                crop_size = crop_config['size'] if isinstance(crop_config['size'], int) else min(crop_config['size'])
+                crop_size = min(crop_size, min_dim)
+                transform_list.append(transforms.CenterCrop(crop_size))
+
+        transform_list.append(transforms.ToTensor())
+
+        if components.get('normalize', {}).get('enabled', True):
+            transform_list.append(transforms.Normalize(
+                config['dataset']['mean'],
+                config['dataset']['std']
+            ))
+
+        return transforms.Compose(transform_list)
+
     def process(self):
         # First check if input is a directory with train/test structure
         if os.path.isdir(self.datafile):
@@ -132,136 +195,137 @@ class DatasetProcessor:
 
 
     def generate_json(self, train_dir, test_dir):
-            first_image_path = None
-            for root, _, files in os.walk(train_dir):
-                for file in files:
-                    if file.endswith(('.png', '.jpg', '.jpeg')):
-                        first_image_path = os.path.join(root, file)
-                        break
-                if first_image_path:
+        """Generate configuration JSON file based on dataset properties"""
+        first_image_path = None
+        for root, _, files in os.walk(train_dir):
+            for file in files:
+                if file.endswith(('.png', '.jpg', '.jpeg')):
+                    first_image_path = os.path.join(root, file)
                     break
+            if first_image_path:
+                break
 
-            if not first_image_path:
-                raise ValueError("No images found in the train directory.")
+        if not first_image_path:
+            raise ValueError("No images found in the train directory.")
 
-            with Image.open(first_image_path) as img:
-                most_common_size = img.size
-                in_channels = 1 if img.mode == "L" else 3
+        with Image.open(first_image_path) as img:
+            most_common_size = img.size
+            img_tensor = transforms.ToTensor()(img)
+            in_channels = img_tensor.shape[0]  # Get actual channel count
 
-            num_classes = len([d for d in os.listdir(train_dir)
-                              if os.path.isdir(os.path.join(train_dir, d))])
+        num_classes = len([d for d in os.listdir(train_dir)
+                          if os.path.isdir(os.path.join(train_dir, d))])
 
-            mean = [0.485, 0.456, 0.406] if in_channels == 3 else [0.5]
-            std = [0.229, 0.224, 0.225] if in_channels == 3 else [0.5]
+        mean = [0.485, 0.456, 0.406] if in_channels == 3 else [0.5]
+        std = [0.229, 0.224, 0.225] if in_channels == 3 else [0.5]
 
-            if os.path.isdir(self.datafile):
-                dataset_name = os.path.basename(os.path.abspath(self.datafile))
-            else:
-                dataset_name = os.path.basename(self.datafile)
+        if os.path.isdir(self.datafile):
+            dataset_name = os.path.basename(os.path.abspath(self.datafile))
+        else:
+            dataset_name = os.path.basename(self.datafile)
 
-
-            json_data = {
-                "dataset": {
-                    "name": dataset_name,
-                    "type": self.datatype,
-                    "in_channels": in_channels,
-                    "num_classes": num_classes,
-                    "input_size": list(most_common_size),
-                    "mean": mean,
-                    "std": std,
-                    "train_dir": train_dir,
-                    "test_dir": test_dir
+        json_data = {
+            "dataset": {
+                "name": dataset_name,
+                "type": self.datatype,
+                "in_channels": in_channels,
+                "num_classes": num_classes,
+                "input_size": list(most_common_size),
+                "mean": mean,
+                "std": std,
+                "train_dir": train_dir,
+                "test_dir": test_dir
+            },
+            "model": {
+                "architecture": "CNN",
+                "feature_dims": 128,
+                "learning_rate": 0.001,
+                "optimizer": {
+                    "type": "Adam",
+                    "weight_decay": 1e-4,
+                    "momentum": 0.9
                 },
-                "model": {
-                    "architecture": "CNN",
-                    "feature_dims": 128,
-                    "learning_rate": 0.001,
-                    "optimizer": {
-                        "type": "Adam",
-                        "weight_decay": 1e-4,
-                        "momentum": 0.9
-                    },
-                    "scheduler": {
-                        "type": "StepLR",
-                        "step_size": 7,
-                        "gamma": 0.1
-                    }
-                },
-                        "training": {
-                            "batch_size": 32,
-                            "epochs": 20,
-                            "num_workers": 4,
-                            "merge_train_test": False,  # Default to False
-                            "early_stopping": {
-                                "patience": 5,
-                                "min_delta": 0.001
-                            },
-                            "cnn_training": {
-                                "resume": True,
-                                "fresh_start": False,
-                                "min_loss_threshold": 0.01,
-                                "checkpoint_dir": "Model/cnn_checkpoints",
-                                "save_best_only": True,
-                                "validation_split": 0.2
-                            }
-                },
-                     "augmentation": {
-                        "enabled": True,
-                        "components": {
-                            "normalize": {
-                                "enabled": True,
-                                "mean": mean,
-                                "std": std
-                            },
-                            "resize": {
-                                "enabled": True,
-                                "size": list(most_common_size)
-                            },
-                            "horizontal_flip": {
-                                "enabled": True
-                            },
-                            "vertical_flip": {
-                                "enabled": False
-                            },
-                            "random_rotation": {
-                                "enabled": True,
-                                "degrees": 15
-                            },
-                            "random_crop": {
-                                "enabled": True,
-                                "size": list(most_common_size)
-                            },
-                            "center_crop": {
-                                "enabled": True,
-                                "size": list(most_common_size)
-                            },
-                            "color_jitter": {
-                                "enabled": True,
-                                "params": {
-                                    "brightness": 0.2,
-                                    "contrast": 0.2,
-                                    "saturation": 0.2,
-                                    "hue": 0.1
-                                }
-                            }
-                        }
-
-                    },
-                "execution_flags": {
-                    "mode": "train_and_predict",
-                    "use_previous_model": True,
-                    "fresh_start": False,
-                    "use_gpu": True,
-                    "mixed_precision": True,
-                    "distributed_training": False,
-                    "debug_mode": False
+                "scheduler": {
+                    "type": "StepLR",
+                    "step_size": 7,
+                    "gamma": 0.1
                 }
+            },
+            "training": {
+                "batch_size": 32,
+                "epochs": 20,
+                "num_workers": 4,
+                "merge_train_test": False,
+                "early_stopping": {
+                    "patience": 5,
+                    "min_delta": 0.001
+                },
+                "cnn_training": {
+                    "resume": True,
+                    "fresh_start": False,
+                    "min_loss_threshold": 0.01,
+                    "checkpoint_dir": "Model/cnn_checkpoints",
+                    "save_best_only": True,
+                    "validation_split": 0.2
+                }
+            },
+            "augmentation": {
+                "enabled": True,
+                "components": {
+                    "normalize": {
+                        "enabled": True,
+                        "mean": mean,
+                        "std": std
+                    },
+                    "resize": {
+                        "enabled": True,
+                        "size": list(most_common_size)
+                    },
+                    "horizontal_flip": {
+                        "enabled": True
+                    },
+                    "vertical_flip": {
+                        "enabled": False
+                    },
+                    "random_rotation": {
+                        "enabled": True,
+                        "degrees": 15
+                    },
+                    "random_crop": {
+                        "enabled": True,
+                        "size": list(most_common_size)
+                    },
+                    "center_crop": {
+                        "enabled": True,
+                        "size": list(most_common_size)
+                    },
+                    "color_jitter": {
+                        "enabled": True,
+                        "params": {
+                            "brightness": 0.2,
+                            "contrast": 0.2,
+                            "saturation": 0.2,
+                            "hue": 0.1
+                        }
+                    }
+                }
+            },
+            "execution_flags": {
+                "mode": "train_and_predict",
+                "use_previous_model": True,
+                "fresh_start": False,
+                "use_gpu": True,
+                "mixed_precision": True,
+                "distributed_training": False,
+                "debug_mode": False
             }
+        }
 
-            json_path = os.path.join(self.output_dir, f"{dataset_name}.json")
-            with open(json_path, "w") as json_file:
-                json.dump(json_data, json_file, indent=4)
-            print(f"JSON file created at {json_path}")
+        json_path = os.path.join(self.output_dir, f"{dataset_name}.json")
+        with open(json_path, "w") as json_file:
+            json.dump(json_data, json_file, indent=4)
+        print(f"JSON file created at {json_path}")
+        return json_path
 
 class CombinedDataset(Dataset):
     def __init__(self, train_dataset, test_dataset):
@@ -352,10 +416,10 @@ class CustomImageDataset(Dataset):
 class FeatureExtractorCNN(nn.Module):
     """CNN for feature extraction from images."""
 
-    def __init__(self, in_channels: int = 1, feature_dims: int = 128):
+    def __init__(self, in_channels: int = 3, feature_dims: int = 128):  # Changed default to 3
         super().__init__()
         self.conv_layers = nn.Sequential(
-            nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),
+            nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),  # Now matches input channels
             nn.BatchNorm2d(32),
             nn.ReLU(),
             nn.MaxPool2d(2),
@@ -513,6 +577,13 @@ class AdaptiveCNNDBNN:
         self.learning_rate = learning_rate
         self.dataset_name = dataset_name
         self.config = config or {}
+
+        # Initialize feature extractor with correct channels
+        self.feature_extractor = FeatureExtractorCNN(
+            in_channels=self.config['dataset']['in_channels'],  # Use config value
+            feature_dims=feature_dims
+        ).to(device)
+
         self.training_log = []
         self.log_dir = os.path.join('Traininglog', self.dataset_name)
         os.makedirs(self.log_dir, exist_ok=True)
@@ -544,94 +615,139 @@ class AdaptiveCNNDBNN:
             self.load_previous_training_data()
             self._load_previous_model()
 
+    def get_dataset_properties(self):
+        """Detect dataset properties like channels correctly"""
+        if self.datatype == 'torchvision':
+            if self.datafile.upper() == 'MNIST':
+                return 1, [0.5], [0.5]  # MNIST is grayscale
+            elif self.datafile.upper() in ['CIFAR10', 'CIFAR100']:
+                return 3, [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]  # RGB
+
+        # For custom datasets, check first image
+        first_image_path = self._find_first_image()
+        with Image.open(first_image_path) as img:
+            if img.mode == 'L':
+                return 1, [0.5], [0.5]
+            elif img.mode == 'RGB':
+                return 3, [0.485, 0.456, 0.406], [0.229, 0.224, 0.225]
+            else:
+                raise ValueError(f"Unsupported image mode: {img.mode}")
+
+    def _find_first_image(self):
+        """Find first image in training directory"""
+        for root, _, files in os.walk(self.train_dir):
+            for file in files:
+                if file.endswith(('.png', '.jpg', '.jpeg')):
+                    return os.path.join(root, file)
+        raise ValueError("No images found in training directory")
+
     def prepare_custom_data(self) -> Tuple[str, str]:
-            """Prepare CNN features and configuration for DBNN"""
-            logger.info("Preparing custom dataset...")
-            dataset_name = self.config['dataset']['name'].lower()
+        """Prepare CNN features and configuration for DBNN"""
+        logger.info("Preparing custom dataset...")
+        prefix = self.get_output_prefix()
+        dataset_name = self.config['dataset']['name'].lower()
+        csv_path = f"{prefix}_{dataset_name}.csv"
+        conf_path = f"{prefix}_{dataset_name}.conf"
 
-            compute_device = self.device
-            storage_device = torch.device('cpu')
-            scaler = torch.cuda.amp.GradScaler() if self.config['execution_flags'].get('mixed_precision') else None
+        compute_device = self.device
+        storage_device = torch.device('cpu')
 
-            # Load datasets with transforms
-            train_transform = get_transforms(self.config, is_train=True)
-            train_dataset = CustomImageDataset(
-                data_dir=self.config['dataset']['train_dir'],
-                transform=train_transform
-            )
+        scaler = None
+        if torch.cuda.is_available() and self.config['execution_flags'].get('mixed_precision'):
+            scaler = torch.cuda.amp.GradScaler()
 
-            # Setup feature extractor
-            self.feature_extractor = FeatureExtractorCNN(
-                in_channels=self.config['dataset']['in_channels'],
-                feature_dims=self.config['model']['feature_dims']
-            ).to(compute_device)
+        # Set channels based on dataset type
+        in_channels = self.config['dataset']['in_channels']
+        if dataset_name.upper() == 'MNIST':
+            in_channels = 1
+            self.config['dataset']['in_channels'] = 1
+            mean = [0.5]
+            std = [0.5]
+        elif dataset_name.upper() in ['CIFAR10', 'CIFAR100']:
+            in_channels = 3
+            self.config['dataset']['in_channels'] = 3
+            mean = [0.485, 0.456, 0.406]
+            std = [0.229, 0.224, 0.225]
 
-            # Configure optimizer
-            optimizer_config = self.config['model']['optimizer']
-            optimizer_params = {
-                'lr': self.config['model']['learning_rate'],
-                'weight_decay': optimizer_config.get('weight_decay', 0)
-            }
-            if optimizer_config['type'] == 'SGD' and 'momentum' in optimizer_config:
-                optimizer_params['momentum'] = optimizer_config['momentum']
+        self.config['dataset']['mean'] = mean
+        self.config['dataset']['std'] = std
 
-            optimizer_class = getattr(optim, optimizer_config['type'])
-            self.optimizer = optimizer_class(self.feature_extractor.parameters(), **optimizer_params)
+        processor = DatasetProcessor(dataset_name)
+        train_transform = processor.get_transforms(self.config, is_train=True)
+        train_dataset = CustomImageDataset(
+            data_dir=self.config['dataset']['train_dir'],
+            transform=train_transform
+        )
 
-            train_loader = DataLoader(
-                train_dataset,
-                batch_size=self.config['training']['batch_size'],
-                shuffle=True,
-                num_workers=self.config['training']['num_workers'],
-                pin_memory=True
-            )
+        # Initialize feature extractor with correct channels
+        self.feature_extractor = FeatureExtractorCNN(
+            in_channels=in_channels,
+            feature_dims=self.config['model']['feature_dims']
+        ).to(compute_device)
 
-            # Extract features
-            logger.info("Extracting features...")
-            self.feature_extractor.eval()
-            features = []
-            labels = []
+        # Configure optimizer
+        optimizer_config = self.config['model']['optimizer']
+        optimizer_params = {
+            'lr': self.config['model']['learning_rate'],
+            'weight_decay': optimizer_config.get('weight_decay', 0)
+        }
+        if optimizer_config['type'] == 'SGD' and 'momentum' in optimizer_config:
+            optimizer_params['momentum'] = optimizer_config['momentum']
 
-            with torch.no_grad():
-                for images, batch_labels in tqdm(train_loader, desc="Feature extraction"):
-                    images = images.to(compute_device)
-                    if self.config['execution_flags'].get('mixed_precision'):
-                        with torch.cuda.amp.autocast():
-                            batch_features = self.feature_extractor(images)
-                    else:
+        optimizer_class = getattr(optim, optimizer_config['type'])
+        self.optimizer = optimizer_class(self.feature_extractor.parameters(), **optimizer_params)
+
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=self.config['training']['batch_size'],
+            shuffle=True,
+            num_workers=self.config['training']['num_workers'],
+            pin_memory=True
+        )
+
+        # Extract features
+        logger.info("Extracting features...")
+        self.feature_extractor.eval()
+        features = []
+        labels = []
+
+        with torch.no_grad():
+            for images, batch_labels in tqdm(train_loader, desc="Feature extraction"):
+                images = images.to(compute_device)
+                if scaler is not None:
+                    with torch.cuda.amp.autocast():
                         batch_features = self.feature_extractor(images)
-                    features.append(batch_features.to(storage_device).numpy())
-                    labels.append(batch_labels.numpy())
+                else:
+                    batch_features = self.feature_extractor(images)
+                features.append(batch_features.to(storage_device).numpy())
+                labels.append(batch_labels.numpy())
 
-            features = np.concatenate(features, axis=0)
-            labels = np.concatenate(labels, axis=0)
+        features = np.concatenate(features, axis=0)
+        labels = np.concatenate(labels, axis=0)
 
-            # Save features and config
-            csv_path = f"{dataset_name}.csv"
-            conf_path = f"{dataset_name}.conf"
+        # Save features and config
+        feature_cols = {f'feature_{i}': features[:, i] for i in range(features.shape[1])}
+        feature_cols['target'] = labels
+        df = pd.DataFrame(feature_cols)
+        df.to_csv(csv_path, index=False)
 
-            feature_cols = {f'feature_{i}': features[:, i] for i in range(features.shape[1])}
-            feature_cols['target'] = labels
-            df = pd.DataFrame(feature_cols)
-            df.to_csv(csv_path, index=False)
-
-            custom_config = {
-                'file_path': csv_path,
-                'column_names': [f'feature_{i}' for i in range(features.shape[1])] + ['target'],
-                'target_column': 'target',
-                'separator': ',',
-                'has_header': True,
-                'likelihood_config': {
-                    'feature_group_size': 2,
-                    'max_combinations': 100,
-                    'bin_sizes': [20]
-                }
+        custom_config = {
+            'file_path': csv_path,
+            'column_names': [f'feature_{i}' for i in range(features.shape[1])] + ['target'],
+            'target_column': 'target',
+            'separator': ',',
+            'has_header': True,
+            'likelihood_config': {
+                'feature_group_size': 2,
+                'max_combinations': 100,
+                'bin_sizes': [20]
             }
+        }
 
-            with open(conf_path, 'w') as f:
-                json.dump(custom_config, f, indent=4)
+        with open(conf_path, 'w') as f:
+            json.dump(custom_config, f, indent=4)
 
-            return csv_path, conf_path
+        return csv_path, conf_path
 
     def create_dbnn_config(self):
         """Create DBNN configuration file from CNN config and dataset info"""
@@ -690,79 +806,76 @@ class AdaptiveCNNDBNN:
         return config_path
 
     def sync_configs(self):
-        """Sync DBNN configuration with CNN JSON config"""
-        cnn_config = self.config
-        dataset_name = self.dataset_name.lower()
-        dbnn_config_path = f"{dataset_name}.conf"
+        prefix = self.get_output_prefix()
+        dataset_name = self.config['dataset']['name'].lower()
+        dbnn_config_path = f"{prefix}_{dataset_name}.conf"
+        csv_path = f"{prefix}_{dataset_name}.csv"
 
-        # Load existing DBNN config if it exists
+        # Default DBNN configuration
+        default_config = {
+            'file_path': csv_path,
+            'column_names': [f'feature_{i}' for i in range(self.feature_dims)] + ['target'],
+            'target_column': self.config.get('target_column', 'target'),
+            'separator': ',',
+            'has_header': True,
+            'likelihood_config': {
+                'feature_group_size': 2,
+                'max_combinations': min(100, self.feature_dims * (self.feature_dims - 1) // 2),
+                'bin_sizes': [20]
+            },
+            'active_learning': {
+                'tolerance': 1.0,
+                'cardinality_threshold_percentile': 95,
+                'strong_margin_threshold': 0.3,
+                'marginal_margin_threshold': 0.1,
+                'min_divergence': 0.1
+            },
+            'training_params': {
+                'Save_training_epochs': True,
+                'training_save_path': f'training_data/{dataset_name}'
+            },
+            'modelType': 'Histogram'
+        }
+
+        # Load existing config if it exists
+        existing_config = {}
         if os.path.exists(dbnn_config_path):
             with open(dbnn_config_path, 'r') as f:
-                dbnn_config = json.load(f)
-        else:
-            dbnn_config = {}
+                existing_config = json.load(f)
 
-        # Sync training parameters
-        cnn_training = cnn_config.get('training', {})
-        dbnn_training = dbnn_config.setdefault('training_params', {})
+        # Update default config with existing values
+        def deep_update(d, u):
+            for k, v in u.items():
+                if isinstance(v, dict):
+                    d[k] = deep_update(d.get(k, {}), v)
+                else:
+                    d[k] = v
+            return d
 
-        # Map CNN config values to DBNN config
-        param_mapping = {
-            'epochs': ('epochs', 1000),
-            'batch_size': ('batch_size', 32),
-            'num_workers': ('num_workers', 4),
-        }
+        config = deep_update(default_config, existing_config)
 
-        for cnn_key, (dbnn_key, default) in param_mapping.items():
-            dbnn_training[dbnn_key] = cnn_training.get(cnn_key, default)
+        # Update with new values from JSON if specified
+        if 'dbnn' in self.config:
+            config = deep_update(config, self.config['dbnn'])
 
-        # Sync optimizer settings
-        optimizer_config = cnn_config.get('model', {}).get('optimizer', {})
-        dbnn_training['learning_rate'] = optimizer_config.get('learning_rate', 0.001)
-        dbnn_training['weight_decay'] = optimizer_config.get('weight_decay', 1e-4)
-
-        # Sync early stopping
-        early_stopping = cnn_training.get('early_stopping', {})
-        dbnn_training['trials'] = early_stopping.get('patience', 5)
-        dbnn_training['min_delta'] = early_stopping.get('min_delta', 0.001)
-
-        # Sync execution flags
-        cnn_flags = cnn_config.get('execution_flags', {})
-        dbnn_flags = dbnn_config.setdefault('execution_flags', {})
-
-        flag_mapping = {
-            'fresh_start': 'fresh_start',
-            'use_gpu': 'use_gpu',
-            'mixed_precision': 'mixed_precision',
-            'debug_mode': 'debug_mode'
-        }
-
-        for cnn_flag, dbnn_flag in flag_mapping.items():
-            dbnn_flags[dbnn_flag] = cnn_flags.get(cnn_flag, False)
-
-        # Sync dataset parameters
-        dataset_config = cnn_config.get('dataset', {})
-        dbnn_dataset = dbnn_config.setdefault('dataset', {})
-        dbnn_dataset.update({
-            'name': dataset_config.get('name', dataset_name),
-            'input_size': dataset_config.get('input_size', [28, 28]),
-            'num_classes': dataset_config.get('num_classes', 10),
-            'in_channels': dataset_config.get('in_channels', 1)
-        })
-
-        # Update feature dimensions from CNN config
-        dbnn_config['likelihood_config'] = {
-            'feature_group_size': 2,
-            'max_combinations': min(100, self.feature_dims * (self.feature_dims - 1) // 2),
-            'bin_sizes': [20]
-        }
-
-        # Save synchronized config
+        # Save updated config
         with open(dbnn_config_path, 'w') as f:
-            json.dump(dbnn_config, f, indent=4)
+            json.dump(config, f, indent=4)
 
-        print(f"Synchronized DBNN configuration saved to {dbnn_config_path}")
-        return dbnn_config
+        # Open in default text editor
+        edit = input("Would you like to edit the DBNN configuration? (y/n): ").lower() == 'y'
+        if edit:
+            if os.name == 'nt':  # Windows
+                os.system(f'notepad {dbnn_config_path}')
+            elif os.name == 'posix':  # Linux/Mac
+                editor = os.environ.get('EDITOR', 'nano')  # Default to nano if EDITOR not set
+                os.system(f'{editor} {dbnn_config_path}')
+
+            # Reload config after editing
+            with open(dbnn_config_path, 'r') as f:
+                config = json.load(f)
+
+        return config
 
     def _load_previous_model(self):
         """Load both CNN and DBNN previous models."""
@@ -778,35 +891,36 @@ class AdaptiveCNNDBNN:
 
 
     def log_training_metrics(self, epoch: int, train_loss: float, train_acc: float,
-                           test_loss: Optional[float] = None, test_acc: Optional[float] = None,
-                           train_loader: DataLoader = None, test_loader: Optional[DataLoader] = None):
-        if self.training_start_time is None:
-            self.training_start_time = time.time()
+                               test_loss: Optional[float] = None, test_acc: Optional[float] = None,
+                               train_loader: DataLoader = None, test_loader: Optional[DataLoader] = None):
+            if self.training_start_time is None:
+                self.training_start_time = time.time()
 
-        elapsed_time = time.time() - self.training_start_time
+            elapsed_time = time.time() - self.training_start_time
+            prefix = self.get_output_prefix()
 
-        metrics = {
-            'epoch': epoch,
-            'elapsed_time': elapsed_time,
-            'elapsed_time_formatted': str(timedelta(seconds=int(elapsed_time))),
-            'learning_rate': self.optimizer.param_groups[0]['lr'],
-            'train_samples': len(train_loader.dataset) if train_loader else None,
-            'test_samples': len(test_loader.dataset) if test_loader else None,
-            'train_loss': train_loss,
-            'train_accuracy': train_acc,
-            'test_loss': test_loss,
-            'test_accuracy': test_acc
-        }
-        self.training_log.append(metrics)
+            metrics = {
+                'epoch': epoch,
+                'elapsed_time': elapsed_time,
+                'elapsed_time_formatted': str(timedelta(seconds=int(elapsed_time))),
+                'learning_rate': self.optimizer.param_groups[0]['lr'],
+                'train_samples': len(train_loader.dataset) if train_loader else None,
+                'test_samples': len(test_loader.dataset) if test_loader else None,
+                'train_loss': train_loss,
+                'train_accuracy': train_acc,
+                'test_loss': test_loss,
+                'test_accuracy': test_acc
+            }
+            self.training_log.append(metrics)
 
-        log_df = pd.DataFrame(self.training_log)
-        log_path = os.path.join(self.log_dir, f'TrainTestLoss_{self.dataset_name}.csv')
-        log_df.to_csv(log_path, index=False)
+            log_df = pd.DataFrame(self.training_log)
+            log_path = os.path.join(self.log_dir, f'{prefix}_TrainTestLoss_{self.dataset_name}.csv')
+            log_df.to_csv(log_path, index=False)
 
-        logger.info(f"Epoch {epoch} ({metrics['elapsed_time_formatted']}): "
-                   f"Train [{metrics['train_samples']} samples] Loss {train_loss:.4f}, Acc {train_acc:.2f}%"
-                   + (f", Test [{metrics['test_samples']} samples] Loss {test_loss:.4f}, Acc {test_acc:.2f}%"
-                      if test_loss is not None else ""))
+            logger.info(f"Epoch {epoch} ({metrics['elapsed_time_formatted']}): "
+                       f"Train [{metrics['train_samples']} samples] Loss {train_loss:.4f}, Acc {train_acc:.2f}%"
+                       + (f", Test [{metrics['test_samples']} samples] Loss {test_loss:.4f}, Acc {test_acc:.2f}%"
+                          if test_loss is not None else ""))
 
 
     def create_training_animations(self):
@@ -1290,7 +1404,8 @@ class AdaptiveCNNDBNN:
         final_df = pd.concat([metadata_df, predictions_df], axis=1)
 
         os.makedirs(output_dir, exist_ok=True)
-        output_path = os.path.join(output_dir, f'{dataset_type}_predictions.csv')
+        prefix = self.get_output_prefix()
+        output_path = os.path.join(output_dir, f'{prefix}_{dataset_type}_predictions.csv')
         final_df.to_csv(output_path, index=False)
         logger.info(f"Saved {dataset_type} predictions to {output_path}")
 
@@ -1316,6 +1431,45 @@ class AdaptiveCNNDBNN:
             )
             self.save_predictions(combined_loader, 'full', output_dir, include_evaluation=False)
 
+    def handle_dataset_split(self):
+        """Handle dataset split configuration based on user preferences"""
+        has_split = os.path.exists(os.path.join(self.datafile, "train")) and \
+                    os.path.exists(os.path.join(self.datafile, "test"))
+
+        if has_split:
+            adaptive = input("Do you want to use adaptive learning? (y/n, default: n): ").lower() == 'y'
+            if not adaptive:
+                # Regular training with existing split
+                self.config['training']['adaptive'] = False
+                self.config['training']['merge_train_test'] = False
+                self.config['training']['mode'] = 'regular'
+                return
+
+            merge = input("Merge train and test data for adaptive learning? (y/n, default: n): ").lower() == 'y'
+            if merge:
+                self.config['training']['adaptive'] = True
+                self.config['training']['merge_train_test'] = True
+                self.config['training']['mode'] = 'merged_adaptive'
+            else:
+                self.config['training']['adaptive'] = True
+                self.config['training']['merge_train_test'] = False
+                self.config['training']['mode'] = 'split_adaptive'
+        else:
+            # No split exists, use adaptive by default
+            self.config['training']['adaptive'] = True
+            self.config['training']['merge_train_test'] = True
+            self.config['training']['mode'] = 'merged_adaptive'
+
+    def get_output_prefix(self):
+        """Get file prefix based on training mode"""
+        mode = self.config['training'].get('mode', 'regular')
+        prefixes = {
+            'regular': 'regular',
+            'merged_adaptive': 'merged_adaptive',
+            'split_adaptive': 'split_adaptive'
+        }
+        return prefixes.get(mode, 'regular')
+
 def setup_logging(log_dir='logs'):
     """Setup logging configuration."""
     os.makedirs(log_dir, exist_ok=True)
@@ -1339,194 +1493,6 @@ def setup_logging(log_dir='logs'):
     logger.info(f"Logging setup complete. Log file: {log_file}")
 
     return logger
-
-
-def prepare_mnist_data(config: Dict) -> None:
-    """
-    Download and prepare MNIST dataset for DBNN.
-    Creates a CSV file with flattened MNIST data.
-    """
-    logger = logging.getLogger(__name__)
-    logger.info("Preparing MNIST dataset...")
-
-    # Generate consistent filenames
-    dataset_name = config['dataset']['name']
-    csv_file = f"{dataset_name}.csv"
-    conf_file = f"{dataset_name}.conf"
-
-    # Download MNIST using torchvision
-    transform = transforms.ToTensor()
-    train_dataset = torchvision.datasets.MNIST(
-        root='./data',
-        train=True,
-        download=True,
-        transform=transform
-    )
-
-    # Convert to DataFrame
-    data_list = []
-    for images, labels in DataLoader(train_dataset, batch_size=len(train_dataset)):
-        # Flatten images and convert to DataFrame
-        images_flat = images.view(images.size(0), -1).numpy()
-        labels_np = labels.numpy()
-
-        # Create feature columns
-        feature_cols = {f'feature_{i}': images_flat[:, i] for i in range(images_flat.shape[1])}
-        feature_cols['target'] = labels_np
-        data_list.append(pd.DataFrame(feature_cols))
-
-    # Combine all data
-    mnist_df = pd.concat(data_list, axis=0, ignore_index=True)
-
-    # Save to CSV
-    mnist_df.to_csv(csv_file, index=False)
-    logger.info(f"MNIST data saved to {csv_file}")
-
-    # Create MNIST config file
-    mnist_config = {
-        'file_path': csv_file,
-        'column_names': [f'feature_{i}' for i in range(784)] + ['target'],
-        'target_column': 'target',
-        'separator': ',',
-        'has_header': True,
-        'likelihood_config': {
-            'feature_group_size': 2,
-            'max_combinations': 100,
-            'bin_sizes': [20]
-        },
-        'active_learning': {
-            'tolerance': 1.0,
-            'cardinality_threshold_percentile': 95
-        },
-        'training_params': {
-            'Save_training_epochs': True,
-            'training_save_path': 'training_data'
-        },
-        'modelType': 'Histogram'
-    }
-
-    with open(conf_file, 'w') as f:
-        json.dump(mnist_config, f, indent=4)
-    logger.info(f"MNIST configuration saved to {conf_file}")
-
-    # Return paths for verification
-    return csv_file, conf_file
-
-def get_default_config() -> Dict:
-    config = {
-        'dataset': {
-            'name': 'mnist',
-            'type': 'torchvision',
-            'in_channels': 1,
-            'num_classes': 10,
-            'input_size': [28, 28],
-            'mean': [0.1307],
-            'std': [0.3081]
-        },
-        'model': {
-            'feature_dims': 128,
-            'learning_rate': 0.001
-        },
-        'training': {
-            'batch_size': 64,
-            'epochs': 10,
-            'num_workers': 4
-        },
-        'augmentation': {
-            'enabled': True,
-            'components': {
-                'normalize': True,
-                'resize': True,
-                'horizontal_flip': False,
-                'vertical_flip': False,
-                'random_rotation': {
-                    'enabled': False,
-                    'degrees': 10
-                },
-                'random_crop': {
-                    'enabled': False,
-                    'size': 28
-                },
-                'center_crop': {
-                    'enabled': False,
-                    'size': 28
-                },
-                'color_jitter': {
-                    'enabled': False,
-                    'params': {
-                        'brightness': 0.2,
-                        'contrast': 0.2,
-                        'saturation': 0.2,
-                        'hue': 0.1
-                    }
-                }
-            }
-        }
-    }
-    return config
-
-def load_config(config_path: str) -> Dict:
-    """Load and validate configuration file."""
-    with open(config_path) as f:
-        config = json.load(f)
-
-    # Validate required fields
-    required_fields = ['dataset', 'model', 'training']
-    for field in required_fields:
-        if field not in config:
-            raise ValueError(f"Missing required field '{field}' in config")
-
-    return config
-
-def get_transforms(config: Dict, is_train: bool = True) -> transforms.Compose:
-    transform_list = []
-    aug_config = config.get('augmentation', {})
-
-    if not aug_config.get('enabled', True):
-        transform_list.append(transforms.ToTensor())
-        return transforms.Compose(transform_list)
-
-    components = aug_config.get('components', {})
-    image_size = config['dataset']['input_size']
-    min_dim = min(image_size[0], image_size[1])
-
-    if components.get('resize', {}).get('enabled', True):
-        transform_list.append(transforms.Resize(image_size))
-
-    if is_train:
-        if components.get('random_crop', {}).get('enabled', False):
-            crop_config = components['random_crop']
-            crop_size = crop_config['size'] if isinstance(crop_config['size'], int) else min(crop_config['size'])
-            crop_size = min(crop_size, min_dim)
-            transform_list.append(transforms.RandomCrop(crop_size))
-
-        if components.get('horizontal_flip', {}).get('enabled', False):
-            transform_list.append(transforms.RandomHorizontalFlip())
-
-        if components.get('vertical_flip', {}).get('enabled', False):
-            transform_list.append(transforms.RandomVerticalFlip())
-
-        if components.get('random_rotation', {}).get('enabled', False):
-            transform_list.append(transforms.RandomRotation(components['random_rotation']['degrees']))
-
-        if components.get('color_jitter', {}).get('enabled', False):
-            transform_list.append(transforms.ColorJitter(**components['color_jitter']['params']))
-    else:
-        if components.get('center_crop', {}).get('enabled', False):
-            crop_config = components['center_crop']
-            crop_size = crop_config['size'] if isinstance(crop_config['size'], int) else min(crop_config['size'])
-            crop_size = min(crop_size, min_dim)
-            transform_list.append(transforms.CenterCrop(crop_size))
-
-    transform_list.append(transforms.ToTensor())
-
-    if components.get('normalize', {}).get('enabled', True):
-        transform_list.append(transforms.Normalize(
-            config['dataset']['mean'],
-            config['dataset']['std']
-        ))
-
-    return transforms.Compose(transform_list)
 
 
 def plot_training_history(history: Dict, save_path: Optional[str] = None):
@@ -1609,7 +1575,11 @@ def main(args=None):
                 processor.generate_json(train_dir, test_dir)
                 with open(config_path, 'r') as f:
                     config = json.load(f)
+        # Create processor instance
+        processor = DatasetProcessor(config['dataset']['name'])
 
+        # Get transforms first
+        transform = processor.get_transforms(config)
         # Ask about dataset merging
         merge_datasets = input("Merge train and test datasets for adaptive learning? (y/n, default: n): ").lower() == 'y'
         config['training']['merge_train_test'] = merge_datasets
@@ -1618,7 +1588,6 @@ def main(args=None):
         print(f"Using device: {device}")
 
         # First, process the data and extract features using CNN
-        transform = get_transforms(config)
         train_dataset, test_dataset = get_dataset(config, transform)
         train_loader = DataLoader(
             train_dataset,
