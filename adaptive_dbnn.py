@@ -1761,12 +1761,11 @@ class GPUDBNN:
                     if len(class_indices) < 2:
                         selected_indices = class_indices  # Take all available if less than 2
                     else:
-                        selected_indices = class_indices[:2]  # Take 2 samples from each class
+                        selected_indices = np.random.choice(class_indices, 2, replace=False)  # Take 2 samples from each class
                     train_indices.extend(selected_indices)
 
                 # Update test indices
                 test_indices = list(set(range(len(X))) - set(train_indices))
-
             DEBUG.log(f" Initial training set size: {len(train_indices)}")
             DEBUG.log(f" Initial test set size: {len(test_indices)}")
 
@@ -1842,18 +1841,12 @@ class GPUDBNN:
 
                 # Reset the metrics printed flag
                 self._last_metrics_printed = False
+                if len(test_indices) == 0:
+                    print("No more test samples available. Training complete.")
+                    break
 
-                if train_accuracy == 1.0:
-                    if len(test_indices) == 0:
-                        print("No more test samples available. Training complete.")
-                        break
+                if test_accuracy == 1.0:
 
-                    # Get new training samples from misclassified examples
-                    new_train_indices = self._select_samples_from_failed_classes(
-                        test_predictions, y_test, test_indices
-                    )
-
-                    if not new_train_indices:
                         print("Achieved 100% accuracy on all data. Training complete.")
                         self.in_adaptive_fit = False
                         return {'train_indices': [], 'test_indices': []}
@@ -2922,7 +2915,10 @@ class GPUDBNN:
             if patience_counter >= patience:
                 tqdm.write(f"No significant improvement for {patience} epochs. Early stopping.")
                 break
-
+            # Check for perfect training accuracy
+            if train_accuracy == 1.0:
+                print("Training accuracy reached 1.00. Stopping training.")
+                break
             # Calculate and store metrics
             train_loss = n_errors / n_samples
             train_pred = self.predict(X_train, batch_size)
