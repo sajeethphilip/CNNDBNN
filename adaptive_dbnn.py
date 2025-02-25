@@ -1758,6 +1758,7 @@ class GPUDBNN:
                 # Select minimum samples from each class for initial training
                 for class_label in unique_classes:
                     class_indices = np.where(y_encoded == class_label)[0]
+                    print(f"The data clss_indices are {class_indices}")
                     if len(class_indices) < 2:
                         selected_indices = class_indices  # Take all available if less than 2
                     else:
