@@ -27,13 +27,6 @@ import os
 import pickle
 import configparser
 import traceback  # Add to provide debug
-import argparse
-
-def parse_args():
-    parser = argparse.ArgumentParser(description="Run GPU-optimized Difference Boosting Neural Network.")
-    parser.add_argument('--config', type=str, default=None,
-                        help='Path to the configuration file. If not provided, the script will prompt for it.')
-    return parser.parse_args()
 #------------------------------------------------------------------------Declarations---------------------
 Trials = 100  # Number of epochs to wait for improvement in training
 cardinality_threshold =0.9
@@ -1112,7 +1105,7 @@ class GPUDBNN:
                 # Filter features based on config
                 if 'column_names' in self.config:
                     DEBUG.log(" Filtering features based on config")
-                    df = df[self.config['column_names']]
+                    df = _filter_features_from_config(df, self.config)
                     DEBUG.log(f" Shape after filtering: {df.shape}")
 
                 # Handle target column
@@ -2088,7 +2081,7 @@ class GPUDBNN:
         if os.path.exists(combinations_path):
             with open(combinations_path, 'rb') as f:
                 combinations_tensor = pickle.load(f)
-            return combinations_tensor.to(self.device)
+                return combinations_tensor.to(self.device)
 
         # Generate new combinations if none exist
         if n_features < group_size:
@@ -2096,7 +2089,6 @@ class GPUDBNN:
 
         # Generate all possible combinations
         all_combinations = list(combinations(range(n_features), group_size))
-
         if not all_combinations:
             raise ValueError(f"No valid combinations generated for {n_features} features in groups of {group_size}")
 
@@ -2104,11 +2096,7 @@ class GPUDBNN:
         if max_combinations and len(all_combinations) > max_combinations:
             # Use fixed seed for consistent sampling
             rng = np.random.RandomState(42)
-
-            # FIX: Convert to array of indices first, then sample from that
-            indices = np.arange(len(all_combinations))
-            sampled_indices = rng.choice(indices, max_combinations, replace=False)
-            all_combinations = [all_combinations[i] for i in sampled_indices]
+            all_combinations = rng.choice(all_combinations, max_combinations, replace=False)
 
         # Convert to tensor
         combinations_tensor = torch.tensor(all_combinations, device=self.device)
@@ -2119,7 +2107,6 @@ class GPUDBNN:
             pickle.dump(combinations_tensor.cpu(), f)
 
         return combinations_tensor
-
 #-----------------------------------------------------------------------------Bin model ---------------------------
 
     def _compute_pairwise_likelihood_parallel(self, dataset: torch.Tensor, labels: torch.Tensor, feature_dims: int):
@@ -3998,7 +3985,7 @@ def configure_debug(config):
     else:
         DEBUG.disable()
 
-def load_global_config(config_path=None):
+def load_global_config():
     """Load global configuration parameters with improved handling"""
     try:
         def remove_comments(json_str):
@@ -4063,12 +4050,8 @@ def load_global_config(config_path=None):
 
             return '\n'.join(line.strip() for line in lines if line.strip())
 
-        # If no config path is provided, prompt the user
-        if config_path is None:
-            config_path = input("Enter the path to the configuration file: ")
-
         # Read and process the configuration file
-        with open(config_path, 'r') as f:
+        with open("adaptive_dbnn.conf", 'r') as f:
             config_str = f.read()
 
         # Clean comments and parse JSON
@@ -4136,11 +4119,12 @@ def load_global_config(config_path=None):
         use_previous_model = True
         print("Using default values")
         return False, True
-if __name__ == "__main__":
-    args = parse_args()
-    fresh_start, use_previous_model = load_global_config(args.config)
 
-    if nokbd == False:
+if __name__ == "__main__":
+    # Load configuration before class definition
+    fresh_start, use_previous_model = load_global_config()
+
+    if nokbd==False:
         print("Will attempt keyboard interaction...")
         if os.name == 'nt' or 'darwin' in os.uname()[0].lower():  # Windows or MacOS
             try:
@@ -4189,6 +4173,7 @@ if __name__ == "__main__":
     else:
         print('Keyboard is disabled . You can enable it in config')
 
+
     if Gen_Samples:
         generate_test_datasets()
 
@@ -4215,6 +4200,7 @@ if __name__ == "__main__":
             print(f"Skipping dataset {dataset}: data file not found")
             continue
 
+
         model = GPUDBNN(
             dataset_name=dataset,
             learning_rate=LearningRate,
@@ -4226,7 +4212,7 @@ if __name__ == "__main__":
         )
 
         if Train:
-            model, results = run_gpu_benchmark(dataset, model)
+            model, results = run_gpu_benchmark(dataset,model)
 
         if Train_only:
             results = model.fit_predict(
