@@ -27,6 +27,7 @@ import os
 import pickle
 import configparser
 import traceback  # Add to provide debug
+from tqdm import tqdm  # Import tqdm for progress bars
 #------------------------------------------------------------------------Declarations---------------------
 Trials = 100  # Number of epochs to wait for improvement in training
 cardinality_threshold =0.9
@@ -2778,9 +2779,12 @@ class GPUDBNN:
         color = Colors.GREEN if overall_acc >= 0.9 else Colors.YELLOW if overall_acc >= 0.7 else Colors.RED
         print(f"{Colors.BOLD}Overall Accuracy: {color}{overall_acc:.2%}{Colors.ENDC}")
 
+
+
     def train(self, X_train: torch.Tensor, y_train: torch.Tensor, X_test: torch.Tensor, y_test: torch.Tensor, batch_size: int = 32):
         """
         Training loop with parallel prediction and weight updates across all compute devices.
+        Includes tqdm progress bars for real-time updates.
         """
         # Ensure data and weights are on the same device
         X_train = X_train.to(self.device)
@@ -2816,7 +2820,8 @@ class GPUDBNN:
         predictions = torch.empty(batch_size, dtype=torch.long, device=self.device)
         batch_mask = torch.empty(batch_size, dtype=torch.bool, device=self.device)
 
-        for epoch in range(self.max_epochs):
+        # Wrap the epoch loop with tqdm for progress tracking
+        for epoch in tqdm(range(self.max_epochs), desc="Epochs", unit="epoch"):
             # Save epoch data
             self.save_epoch_data(epoch, self.train_indices, self.test_indices)
 
@@ -2824,8 +2829,8 @@ class GPUDBNN:
             failed_cases = []
             n_errors = 0
 
-            # Process training data in batches
-            for i in range(0, n_samples, batch_size):
+            # Wrap the batch processing loop with tqdm for progress tracking
+            for i in tqdm(range(0, n_samples, batch_size), desc="Batches", unit="batch", leave=False):
                 batch_end = min(i + batch_size, n_samples)
                 current_batch_size = batch_end - i
 
@@ -2880,9 +2885,9 @@ class GPUDBNN:
             Trend_time = time.time()
             training_time = Trend_time - Trstart_time
 
-            print(f"Training time for epoch {epoch + 1} is: {Colors.highlight_time(training_time)} seconds")
-            print(f"Epoch {epoch + 1}: Train error rate = {Colors.color_value(train_error_rate, prev_train_error, False)}, "
-                  f"Test accuracy = {Colors.color_value(test_accuracy, prev_test_accuracy, True)}")
+            # Update tqdm description with current epoch metrics
+            tqdm.write(f"Epoch {epoch + 1}: Train error rate = {Colors.color_value(train_error_rate, prev_train_error, False)}, "
+                       f"Test accuracy = {Colors.color_value(test_accuracy, prev_test_accuracy, True)}")
 
             # Update previous values for next iteration
             prev_train_error = train_error_rate
@@ -2890,7 +2895,7 @@ class GPUDBNN:
 
             # Check for convergence on test data
             if test_accuracy == 1.0 or train_error_rate == 0:
-                print(f"Moving on to Epoch: {epoch + 1}")
+                tqdm.write(f"Moving on to Epoch: {epoch + 1}")
                 break
 
             if train_error_rate <= self.best_error:
@@ -2907,7 +2912,7 @@ class GPUDBNN:
                 patience_counter += 1
 
             if patience_counter >= patience:
-                print(f"No significant improvement for {patience} epochs. Early stopping.")
+                tqdm.write(f"No significant improvement for {patience} epochs. Early stopping.")
                 break
 
             # Calculate and store metrics
