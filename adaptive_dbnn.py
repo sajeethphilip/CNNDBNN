@@ -537,36 +537,41 @@ class BinWeightUpdater:
         self.update_count = 0
 
 
-    def batch_update_weights(self, class_indices, pair_indices, bin_indices, adjustments):
-            """Batch update with compatibility and proper shape handling"""
-            n_updates = len(class_indices)
+    def update_weight(self, class_id: int, pair_idx: int, bin_i: torch.Tensor, bin_j: torch.Tensor, adjustment: float):
+        """Update weights for a batch of indices."""
+        try:
+            # Ensure class_id and pair_idx are integers
+            class_id = int(class_id)
+            pair_idx = int(pair_idx)
 
-            # Process in batches for memory efficiency
-            batch_size = 100  # Adjust based on available memory
-            for i in range(0, n_updates, batch_size):
-                end_idx = min(i + batch_size, n_updates)
+            # Ensure bin_i and bin_j are scalar tensors or integers
+            if isinstance(bin_i, torch.Tensor):
+                if bin_i.numel() > 1:
+                    raise ValueError("bin_i must be a scalar tensor or integer")
+                bin_i = int(bin_i.item())
+            else:
+                bin_i = int(bin_i)
 
-                for idx in range(i, end_idx):
-                    class_id = int(class_indices[idx])
-                    pair_idx = int(pair_indices[idx])
+            if isinstance(bin_j, torch.Tensor):
+                if bin_j.numel() > 1:
+                    raise ValueError("bin_j must be a scalar tensor or integer")
+                bin_j = int(bin_j.item())
+            else:
+                bin_j = int(bin_j)
 
-                    # Handle bin indices properly based on their structure
-                    if isinstance(bin_indices[idx], tuple):
-                        bin_i, bin_j = bin_indices[idx]
-                    else:
-                        # If bin_indices is a tensor or array
-                        bin_i = bin_indices[idx][0] if len(bin_indices[idx].shape) > 1 else bin_indices[idx]
-                        bin_j = bin_indices[idx][1] if len(bin_indices[idx].shape) > 1 else bin_indices[idx]
+            # Ensure indices are within bounds
+            bin_i = min(max(0, bin_i), self.n_bins_per_dim - 1)
+            bin_j = min(max(0, bin_j), self.n_bins_per_dim - 1)
 
-                    # Ensure indices are properly shaped scalars
-                    bin_i = int(bin_i.item() if torch.is_tensor(bin_i) else bin_i)
-                    bin_j = int(bin_j.item() if torch.is_tensor(bin_j) else bin_j)
+            # Update the weight
+            self.histogram_weights[class_id][pair_idx][bin_i, bin_j] += adjustment
 
-                    adjustment = float(adjustments[idx].item() if torch.is_tensor(adjustments[idx]) else adjustments[idx])
-
-                    # Update weight with proper shape handling
-                    self.histogram_weights[class_id][pair_idx][bin_i, bin_j] += adjustment
-
+        except Exception as e:
+            print(f"Error updating weight: {str(e)}")
+            print(f"class_id: {class_id}, pair_idx: {pair_idx}")
+            print(f"bin_i: {bin_i}, bin_j: {bin_j}")
+            print(f"adjustment: {adjustment}")
+            raise
 
     def get_histogram_weights(self, class_id: int, pair_idx: int) -> torch.Tensor:
         """Get weights ensuring proper dimensions"""
@@ -2864,11 +2869,14 @@ class GPUDBNN:
                         # Update weights for the true class
                         if modelType == "Histogram":
                             for pair_idx, (bin_i, bin_j) in bin_indices.items():
-                                self.weight_updater.update_weight(true_class, pair_idx, bin_i, bin_j, adjustment)
+                                # Ensure bin_i and bin_j are scalar values
+                                bin_i_scalar = bin_i[idx].item() if isinstance(bin_i, torch.Tensor) else bin_i
+                                bin_j_scalar = bin_j[idx].item() if isinstance(bin_j, torch.Tensor) else bin_j
+
+                                self.weight_updater.update_weight(true_class, pair_idx, bin_i_scalar, bin_j_scalar, adjustment)
                         elif modelType == "Gaussian":
                             for pair_idx in range(len(self.feature_pairs)):
                                 self.weight_updater.update_gaussian_weights(true_class, pair_idx, adjustment)
-
             # Calculate training error rate
             train_error_rate = n_errors / n_samples
             error_rates.append(train_error_rate)
