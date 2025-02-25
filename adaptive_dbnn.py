@@ -2780,62 +2780,19 @@ class GPUDBNN:
 
     def train(self, X_train: torch.Tensor, y_train: torch.Tensor, X_test: torch.Tensor, y_test: torch.Tensor, batch_size: int = 32):
         """
-        Training loop with proper error tracking and GPU data transfer handling.
+        Training loop with parallel prediction and weight updates across all compute devices.
         """
+        # Ensure data and weights are on the same device
+        X_train = X_train.to(self.device)
+        y_train = y_train.to(self.device)
+        X_test = X_test.to(self.device)
+        y_test = y_test.to(self.device)
 
-        # Store tensors as class attributes for access during training
-        self.X_train_tensor = X_train
-        self.y_train_tensor = y_train
-        self.X_test_tensor = X_test
-        self.y_test_tensor = y_test
-
-
-        # Handle data transfer to GPU correctly
-        if self.device != 'cpu':
-            if not X_train.is_cuda:
-                X_train = torch.as_tensor(X_train).pin_memory().to(self.device, non_blocking=True)
-                y_train = torch.as_tensor(y_train).pin_memory().to(self.device, non_blocking=True)
-                X_test = torch.as_tensor(X_test).pin_memory().to(self.device, non_blocking=True)
-                y_test = torch.as_tensor(y_test).pin_memory().to(self.device, non_blocking=True)
-        else:
-            X_train = torch.as_tensor(X_train).to(self.device)
-            y_train = torch.as_tensor(y_train).to(self.device)
-            X_test = torch.as_tensor(X_test).to(self.device)
-            y_test = torch.as_tensor(y_test).to(self.device)
-
-        # Initialize bin-specific weights if not loaded
+        # Initialize weights if needed
         if self.weight_updater is None:
             self._initialize_bin_weights()
 
-        # Load previous best error if exists
-        previous_best_error = float('inf')
-        if hasattr(self, 'best_error'):
-            previous_best_error = self.best_error
-
-        # Pre-compute likelihood parameters
-        if modelType == "Histogram":
-            self.likelihood_params = self._compute_pairwise_likelihood_parallel(
-                X_train, y_train, X_train.shape[1]
-            )
-        elif modelType == "Gaussian":
-            self.likelihood_params = self._compute_pairwise_likelihood_parallel_std(
-                X_train, y_train, X_train.shape[1]
-            )
-
-        # Initialize weights if not loaded
-        if self.current_W is None:
-            n_pairs = len(self.feature_pairs)
-            n_classes = len(self.likelihood_params['classes'])
-            self.current_W = torch.full(
-                (n_classes, n_pairs),
-                0.1,
-                device=self.device,
-                dtype=torch.float32
-            )
-            if self.best_W is None:
-                self.best_W = self.current_W.clone()
-
-        # Training loop variables
+        # Initialize training loop variables
         n_samples = len(X_train)
         error_rates = []
         train_losses = []
@@ -2860,7 +2817,6 @@ class GPUDBNN:
         batch_mask = torch.empty(batch_size, dtype=torch.bool, device=self.device)
 
         for epoch in range(self.max_epochs):
-
             # Save epoch data
             self.save_epoch_data(epoch, self.train_indices, self.test_indices)
 
@@ -2876,31 +2832,43 @@ class GPUDBNN:
                 batch_X = X_train[i:batch_end]
                 batch_y = y_train[i:batch_end]
 
-                # Compute posteriors for batch
+                # Compute posteriors for batch in parallel
                 if modelType == "Histogram":
                     posteriors, bin_indices = self._compute_batch_posterior(batch_X)
                 elif modelType == "Gaussian":
                     posteriors, comp_resp = self._compute_batch_posterior_std(batch_X)
 
+                # Get predictions
                 predictions[:current_batch_size] = torch.argmax(posteriors, dim=1)
                 batch_mask[:current_batch_size] = (predictions[:current_batch_size] != batch_y)
 
                 n_errors += batch_mask[:current_batch_size].sum().item()
 
+                # Update weights for misclassified examples in parallel
                 if batch_mask[:current_batch_size].any():
                     failed_indices = torch.where(batch_mask[:current_batch_size])[0]
                     for idx in failed_indices:
-                        failed_cases.append((
-                            batch_X[idx],
-                            batch_y[idx].item(),
-                            posteriors[idx].cpu().numpy()
-                        ))
+                        true_class = batch_y[idx].item()
+                        pred_class = predictions[idx].item()
+                        true_posterior = posteriors[idx, true_class].item()
+                        pred_posterior = posteriors[idx, pred_class].item()
+
+                        # Calculate weight adjustment
+                        adjustment = self.learning_rate * (1.0 - (true_posterior / pred_posterior))
+
+                        # Update weights for the true class
+                        if modelType == "Histogram":
+                            for pair_idx, (bin_i, bin_j) in bin_indices.items():
+                                self.weight_updater.update_weight(true_class, pair_idx, bin_i, bin_j, adjustment)
+                        elif modelType == "Gaussian":
+                            for pair_idx in range(len(self.feature_pairs)):
+                                self.weight_updater.update_gaussian_weights(true_class, pair_idx, adjustment)
 
             # Calculate training error rate
             train_error_rate = n_errors / n_samples
             error_rates.append(train_error_rate)
 
- # Calculate test accuracy on all remaining test data
+            # Calculate test accuracy on all remaining test data
             if hasattr(self, 'test_indices') and self.test_indices:
                 full_test_data = self.X_tensor[self.test_indices]  # Use class attribute
                 full_test_labels = self.y_tensor[self.test_indices]  # Use class attribute
@@ -2916,14 +2884,12 @@ class GPUDBNN:
             print(f"Epoch {epoch + 1}: Train error rate = {Colors.color_value(train_error_rate, prev_train_error, False)}, "
                   f"Test accuracy = {Colors.color_value(test_accuracy, prev_test_accuracy, True)}")
 
-
-
             # Update previous values for next iteration
             prev_train_error = train_error_rate
             prev_test_accuracy = test_accuracy
 
             # Check for convergence on test data
-            if test_accuracy == 1.0 or train_error_rate==0:
+            if test_accuracy == 1.0 or train_error_rate == 0:
                 print(f"Moving on to Epoch: {epoch + 1}")
                 break
 
@@ -2943,9 +2909,6 @@ class GPUDBNN:
             if patience_counter >= patience:
                 print(f"No significant improvement for {patience} epochs. Early stopping.")
                 break
-
-            if failed_cases:
-                self._update_priors_parallel(failed_cases, batch_size)
 
             # Calculate and store metrics
             train_loss = n_errors / n_samples
