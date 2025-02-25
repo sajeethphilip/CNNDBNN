@@ -2778,160 +2778,160 @@ class GPUDBNN:
         color = Colors.GREEN if overall_acc >= 0.9 else Colors.YELLOW if overall_acc >= 0.7 else Colors.RED
         print(f"{Colors.BOLD}Overall Accuracy: {color}{overall_acc:.2%}{Colors.ENDC}")
 
-    def train(self, X_train: torch.Tensor, y_train: torch.Tensor, X_test: torch.Tensor, y_test: torch.Tensor, batch_size: int = 32):
-        """
-        Training loop with parallel prediction and weight updates across all compute devices.
-        """
-        # Ensure data and weights are on the same device
-        X_train = X_train.to(self.device)
-        y_train = y_train.to(self.device)
-        X_test = X_test.to(self.device)
-        y_test = y_test.to(self.device)
+def train(self, X_train: torch.Tensor, y_train: torch.Tensor, X_test: torch.Tensor, y_test: torch.Tensor, batch_size: int = 32):
+    """
+    Training loop with parallel prediction and weight updates across all compute devices.
+    """
+    # Ensure data and weights are on the same device
+    X_train = X_train.to(self.device)
+    y_train = y_train.to(self.device)
+    X_test = X_test.to(self.device)
+    y_test = y_test.to(self.device)
 
-        # Initialize weights if needed
-        if self.weight_updater is None:
-            self._initialize_bin_weights()
+    # Initialize weights if needed
+    if self.weight_updater is None:
+        self._initialize_bin_weights()
 
-        # Initialize training loop variables
-        n_samples = len(X_train)
-        error_rates = []
-        train_losses = []
-        test_losses = []
-        train_accuracies = []
-        test_accuracies = []
-        stop_training = False
-        patience_counter = 0
-        self.learning_rate = LearningRate
+    # Initialize training loop variables
+    n_samples = len(X_train)
+    error_rates = []
+    train_losses = []
+    test_losses = []
+    train_accuracies = []
+    test_accuracies = []
+    stop_training = False
+    patience_counter = 0
+    self.learning_rate = LearningRate
 
-        # Initialize previous values for color comparison
-        prev_train_error = float('inf')
-        prev_test_accuracy = 0.0
+    # Initialize previous values for color comparison
+    prev_train_error = float('inf')
+    prev_test_accuracy = 0.0
 
-        if self.in_adaptive_fit:
-            patience = 5
+    if self.in_adaptive_fit:
+        patience = 5
+    else:
+        patience = Trials
+
+    # Pre-allocate tensors for batch processing
+    predictions = torch.empty(batch_size, dtype=torch.long, device=self.device)
+    batch_mask = torch.empty(batch_size, dtype=torch.bool, device=self.device)
+
+    for epoch in range(self.max_epochs):
+        # Save epoch data
+        self.save_epoch_data(epoch, self.train_indices, self.test_indices)
+
+        Trstart_time = time.time()
+        failed_cases = []
+        n_errors = 0
+
+        # Process training data in batches
+        for i in range(0, n_samples, batch_size):
+            batch_end = min(i + batch_size, n_samples)
+            current_batch_size = batch_end - i
+
+            batch_X = X_train[i:batch_end]
+            batch_y = y_train[i:batch_end]
+
+            # Compute posteriors for batch in parallel
+            if modelType == "Histogram":
+                posteriors, bin_indices = self._compute_batch_posterior(batch_X)
+            elif modelType == "Gaussian":
+                posteriors, comp_resp = self._compute_batch_posterior_std(batch_X)
+
+            # Get predictions
+            predictions[:current_batch_size] = torch.argmax(posteriors, dim=1)
+            batch_mask[:current_batch_size] = (predictions[:current_batch_size] != batch_y)
+
+            n_errors += batch_mask[:current_batch_size].sum().item()
+
+            # Update weights for misclassified examples in parallel
+            if batch_mask[:current_batch_size].any():
+                failed_indices = torch.where(batch_mask[:current_batch_size])[0]
+                for idx in failed_indices:
+                    true_class = batch_y[idx].item()
+                    pred_class = predictions[idx].item()
+                    true_posterior = posteriors[idx, true_class].item()
+                    pred_posterior = posteriors[idx, pred_class].item()
+
+                    # Calculate weight adjustment
+                    adjustment = self.learning_rate * (1.0 - (true_posterior / pred_posterior))
+
+                    # Update weights for the true class
+                    if modelType == "Histogram":
+                        for pair_idx, (bin_i, bin_j) in bin_indices.items():
+                            self.weight_updater.update_weight(true_class, pair_idx, bin_i, bin_j, adjustment)
+                    elif modelType == "Gaussian":
+                        for pair_idx in range(len(self.feature_pairs)):
+                            self.weight_updater.update_gaussian_weights(true_class, pair_idx, adjustment)
+
+        # Calculate training error rate
+        train_error_rate = n_errors / n_samples
+        error_rates.append(train_error_rate)
+
+        # Calculate test accuracy on all remaining test data
+        if hasattr(self, 'test_indices') and self.test_indices:
+            full_test_data = self.X_tensor[self.test_indices]  # Use class attribute
+            full_test_labels = self.y_tensor[self.test_indices]  # Use class attribute
+            test_predictions = self.predict(full_test_data, batch_size=batch_size)
+            test_accuracy = (test_predictions == full_test_labels.cpu()).float().mean()
         else:
-            patience = Trials
+            test_predictions = self.predict(X_test, batch_size=batch_size)
+            test_accuracy = (test_predictions == y_test.cpu()).float().mean()
+        Trend_time = time.time()
+        training_time = Trend_time - Trstart_time
 
-        # Pre-allocate tensors for batch processing
-        predictions = torch.empty(batch_size, dtype=torch.long, device=self.device)
-        batch_mask = torch.empty(batch_size, dtype=torch.bool, device=self.device)
+        print(f"Training time for epoch {epoch + 1} is: {Colors.highlight_time(training_time)} seconds")
+        print(f"Epoch {epoch + 1}: Train error rate = {Colors.color_value(train_error_rate, prev_train_error, False)}, "
+              f"Test accuracy = {Colors.color_value(test_accuracy, prev_test_accuracy, True)}")
 
-        for epoch in range(self.max_epochs):
-            # Save epoch data
-            self.save_epoch_data(epoch, self.train_indices, self.test_indices)
+        # Update previous values for next iteration
+        prev_train_error = train_error_rate
+        prev_test_accuracy = test_accuracy
 
-            Trstart_time = time.time()
-            failed_cases = []
-            n_errors = 0
+        # Check for convergence on test data
+        if test_accuracy == 1.0 or train_error_rate == 0:
+            print(f"Moving on to Epoch: {epoch + 1}")
+            break
 
-            # Process training data in batches
-            for i in range(0, n_samples, batch_size):
-                batch_end = min(i + batch_size, n_samples)
-                current_batch_size = batch_end - i
-
-                batch_X = X_train[i:batch_end]
-                batch_y = y_train[i:batch_end]
-
-                # Compute posteriors for batch in parallel
-                if modelType == "Histogram":
-                    posteriors, bin_indices = self._compute_batch_posterior(batch_X)
-                elif modelType == "Gaussian":
-                    posteriors, comp_resp = self._compute_batch_posterior_std(batch_X)
-
-                # Get predictions
-                predictions[:current_batch_size] = torch.argmax(posteriors, dim=1)
-                batch_mask[:current_batch_size] = (predictions[:current_batch_size] != batch_y)
-
-                n_errors += batch_mask[:current_batch_size].sum().item()
-
-                # Update weights for misclassified examples in parallel
-                if batch_mask[:current_batch_size].any():
-                    failed_indices = torch.where(batch_mask[:current_batch_size])[0]
-                    for idx in failed_indices:
-                        true_class = batch_y[idx].item()
-                        pred_class = predictions[idx].item()
-                        true_posterior = posteriors[idx, true_class].item()
-                        pred_posterior = posteriors[idx, pred_class].item()
-
-                        # Calculate weight adjustment
-                        adjustment = self.learning_rate * (1.0 - (true_posterior / pred_posterior))
-
-                        # Update weights for the true class
-                        if modelType == "Histogram":
-                            for pair_idx, (bin_i, bin_j) in bin_indices.items():
-                                self.weight_updater.update_weight(true_class, pair_idx, bin_i, bin_j, adjustment)
-                        elif modelType == "Gaussian":
-                            for pair_idx in range(len(self.feature_pairs)):
-                                self.weight_updater.update_gaussian_weights(true_class, pair_idx, adjustment)
-
-            # Calculate training error rate
-            train_error_rate = n_errors / n_samples
-            error_rates.append(train_error_rate)
-
-            # Calculate test accuracy on all remaining test data
-            if hasattr(self, 'test_indices') and self.test_indices:
-                full_test_data = self.X_tensor[self.test_indices]  # Use class attribute
-                full_test_labels = self.y_tensor[self.test_indices]  # Use class attribute
-                test_predictions = self.predict(full_test_data, batch_size=batch_size)
-                test_accuracy = (test_predictions == full_test_labels.cpu()).float().mean()
-            else:
-                test_predictions = self.predict(X_test, batch_size=batch_size)
-                test_accuracy = (test_predictions == y_test.cpu()).float().mean()
-            Trend_time = time.time()
-            training_time = Trend_time - Trstart_time
-
-            print(f"Training time for epoch {epoch + 1} is: {Colors.highlight_time(training_time)} seconds")
-            print(f"Epoch {epoch + 1}: Train error rate = {Colors.color_value(train_error_rate, prev_train_error, False)}, "
-                  f"Test accuracy = {Colors.color_value(test_accuracy, prev_test_accuracy, True)}")
-
-            # Update previous values for next iteration
-            prev_train_error = train_error_rate
-            prev_test_accuracy = test_accuracy
-
-            # Check for convergence on test data
-            if test_accuracy == 1.0 or train_error_rate == 0:
-                print(f"Moving on to Epoch: {epoch + 1}")
-                break
-
-            if train_error_rate <= self.best_error:
-                improvement = self.best_error - train_error_rate
-                self.best_error = train_error_rate
-                self.best_W = self.current_W.clone()
-                self._save_best_weights()
-                if improvement <= 0.001:
-                    patience_counter += 1
-                else:
-                    patience_counter = 0
-                    self.learning_rate = LearningRate
-            else:
+        if train_error_rate <= self.best_error:
+            improvement = self.best_error - train_error_rate
+            self.best_error = train_error_rate
+            self.best_W = self.current_W.clone()
+            self._save_best_weights()
+            if improvement <= 0.001:
                 patience_counter += 1
+            else:
+                patience_counter = 0
+                self.learning_rate = LearningRate
+        else:
+            patience_counter += 1
 
-            if patience_counter >= patience:
-                print(f"No significant improvement for {patience} epochs. Early stopping.")
-                break
+        if patience_counter >= patience:
+            print(f"No significant improvement for {patience} epochs. Early stopping.")
+            break
 
-            # Calculate and store metrics
-            train_loss = n_errors / n_samples
-            train_pred = self.predict(X_train, batch_size)
-            train_acc = (train_pred == y_train.cpu()).float().mean()
+        # Calculate and store metrics
+        train_loss = n_errors / n_samples
+        train_pred = self.predict(X_train, batch_size)
+        train_acc = (train_pred == y_train.cpu()).float().mean()
 
-            test_loss = (test_predictions != y_test.cpu()).float().mean()
+        test_loss = (test_predictions != y_test.cpu()).float().mean()
 
-            # Store metrics
-            train_losses.append(train_loss)
-            test_losses.append(test_loss)
-            train_accuracies.append(train_acc)
-            test_accuracies.append(test_accuracy)
+        # Store metrics
+        train_losses.append(train_loss)
+        test_losses.append(test_loss)
+        train_accuracies.append(train_acc)
+        test_accuracies.append(test_accuracy)
 
-            # Plot metrics
-            self.plot_training_metrics(
-                train_losses, test_losses,
-                train_accuracies, test_accuracies,
-                save_path=f'{self.dataset_name}_training_metrics.png'
-            )
+        # Plot metrics
+        self.plot_training_metrics(
+            train_losses, test_losses,
+            train_accuracies, test_accuracies,
+            save_path=f'{self.dataset_name}_training_metrics.png'
+        )
 
-        self._save_model_components()
-        return self.current_W.cpu(), error_rates
+    self._save_model_components()
+    return self.current_W.cpu(), error_rates
 
     def plot_training_metrics(self, train_loss, test_loss, train_acc, test_acc, save_path=None):
         """Plot training and testing metrics over epochs"""
