@@ -2845,7 +2845,7 @@ class GPUDBNN:
         prev_test_accuracy = 0.0
 
         if self.in_adaptive_fit:
-            patience = 5
+            patience = 500
         else:
             patience = Trials
 
