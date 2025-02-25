@@ -846,7 +846,7 @@ class GPUDBNN:
         # Load configuration and data
         self.config = DatasetConfig.load_config(self.dataset_name)
         self.target_column = self.config['target_column']
-
+        self.training_save_path = self.config['training_params']['training_save_path']
         # Initialize model components
         self.scaler = StandardScaler()
         self.label_encoder = LabelEncoder()
@@ -1598,6 +1598,19 @@ class GPUDBNN:
 
         print(f"\nTotal samples selected: {len(final_selected_indices)}")
         return final_selected_indices
+
+    def log_training_epoch(self,epoch, train_sample_size, train_time, train_accuracy, test_size, testing_time, test_accuracy, log_file_path):
+        """Log training and testing metrics for each epoch to a CSV file"""
+        file_exists = os.path.isfile(log_file_path)
+
+        with open(log_file_path, mode='a', newline='') as file:
+            writer = csv.writer(file)
+            if not file_exists:
+                # Write header if the file does not exist
+                writer.writerow(["epoch", "train_sample_size", "train_time", "train_accuracy", "test_size", "testing_time", "test_accuracy"])
+
+            # Write the epoch data
+            writer.writerow([epoch, train_sample_size, train_time, train_accuracy, test_size, testing_time, test_accuracy])
 
     def adaptive_fit_predict(self, max_rounds: int = 10,
                             improvement_threshold: float = 0.001,
@@ -2784,15 +2797,16 @@ class GPUDBNN:
 
     def train(self, X_train: torch.Tensor, y_train: torch.Tensor, X_test: torch.Tensor, y_test: torch.Tensor, batch_size: int = 32):
         """
-        Training loop with proper error tracking and GPU data transfer handling.
+        Training loop with proper error tracking, GPU data transfer handling, and epoch logging.
         """
+        # Ensure the output directory exists
+        os.makedirs(self.training_save_path, exist_ok=True)
 
         # Store tensors as class attributes for access during training
         self.X_train_tensor = X_train
         self.y_train_tensor = y_train
         self.X_test_tensor = X_test
         self.y_test_tensor = y_test
-
 
         # Handle data transfer to GPU correctly
         if self.device != 'cpu':
@@ -2817,11 +2831,11 @@ class GPUDBNN:
             previous_best_error = self.best_error
 
         # Pre-compute likelihood parameters
-        if modelType == "Histogram":
+        if self.config['modelType'] == "Histogram":
             self.likelihood_params = self._compute_pairwise_likelihood_parallel(
                 X_train, y_train, X_train.shape[1]
             )
-        elif modelType == "Gaussian":
+        elif self.config['modelType'] == "Gaussian":
             self.likelihood_params = self._compute_pairwise_likelihood_parallel_std(
                 X_train, y_train, X_train.shape[1]
             )
@@ -2848,26 +2862,16 @@ class GPUDBNN:
         test_accuracies = []
         stop_training = False
         patience_counter = 0
-        self.learning_rate = LearningRate
 
         # Initialize previous values for color comparison
         prev_train_error = float('inf')
         prev_test_accuracy = 0.0
-
-        if self.in_adaptive_fit:
-            patience = 20
-        else:
-            patience = Trials
 
         # Pre-allocate tensors for batch processing
         predictions = torch.empty(batch_size, dtype=torch.long, device=self.device)
         batch_mask = torch.empty(batch_size, dtype=torch.bool, device=self.device)
 
         for epoch in range(self.max_epochs):
-
-            # Save epoch data
-            self.save_epoch_data(epoch, self.train_indices, self.test_indices)
-
             Trstart_time = time.time()
             failed_cases = []
             n_errors = 0
@@ -2881,9 +2885,9 @@ class GPUDBNN:
                 batch_y = y_train[i:batch_end]
 
                 # Compute posteriors for batch
-                if modelType == "Histogram":
+                if self.config['modelType'] == "Histogram":
                     posteriors, bin_indices = self._compute_batch_posterior(batch_X)
-                elif modelType == "Gaussian":
+                elif self.config['modelType'] == "Gaussian":
                     posteriors, comp_resp = self._compute_batch_posterior_std(batch_X)
 
                 predictions[:current_batch_size] = torch.argmax(posteriors, dim=1)
@@ -2904,7 +2908,7 @@ class GPUDBNN:
             train_error_rate = n_errors / n_samples
             error_rates.append(train_error_rate)
 
- # Calculate test accuracy on all remaining test data
+            # Calculate test accuracy on all remaining test data
             if hasattr(self, 'test_indices') and self.test_indices:
                 full_test_data = self.X_tensor[self.test_indices]  # Use class attribute
                 full_test_labels = self.y_tensor[self.test_indices]  # Use class attribute
@@ -2916,18 +2920,21 @@ class GPUDBNN:
             Trend_time = time.time()
             training_time = Trend_time - Trstart_time
 
-            print(f"Training time for epoch {epoch + 1} is: {Colors.highlight_time(training_time)} seconds")
-            print(f"Epoch {epoch + 1}: Train error rate = {Colors.color_value(train_error_rate, prev_train_error, False)}, "
-                  f"Test accuracy = {Colors.color_value(test_accuracy, prev_test_accuracy, True)}")
+            print(f"Training time for epoch {epoch + 1} is: {training_time:.2f} seconds")
+            print(f"Epoch {epoch + 1}: Train error rate = {train_error_rate:.4f}, "
+                  f"Test accuracy = {test_accuracy:.4f}")
 
-
+            # Log the epoch metrics
+            train_sample_size = n_samples
+            test_size = len(X_test)
+            self.log_training_epoch(epoch, train_sample_size, training_time, 1 - train_error_rate, test_size, 0, test_accuracy)
 
             # Update previous values for next iteration
             prev_train_error = train_error_rate
             prev_test_accuracy = test_accuracy
 
             # Check for convergence on test data
-            if test_accuracy == 1.0 or train_error_rate==0:
+            if test_accuracy == 1.0 or train_error_rate == 0:
                 print(f"Moving on to Epoch: {epoch + 1}")
                 break
 
@@ -2940,12 +2947,12 @@ class GPUDBNN:
                     patience_counter += 1
                 else:
                     patience_counter = 0
-                    self.learning_rate = LearningRate
+                    self.learning_rate = self.config['training_params']['learning_rate']
             else:
                 patience_counter += 1
 
-            if patience_counter >= patience:
-                print(f"No significant improvement for {patience} epochs. Early stopping.")
+            if patience_counter >= self.patience:
+                print(f"No significant improvement for {self.patience} epochs. Early stopping.")
                 break
 
             if failed_cases:
@@ -2963,13 +2970,6 @@ class GPUDBNN:
             test_losses.append(test_loss)
             train_accuracies.append(train_acc)
             test_accuracies.append(test_accuracy)
-
-            # Plot metrics
-            self.plot_training_metrics(
-                train_losses, test_losses,
-                train_accuracies, test_accuracies,
-                save_path=f'{self.dataset_name}_training_metrics.png'
-            )
 
         self._save_model_components()
         return self.current_W.cpu(), error_rates
