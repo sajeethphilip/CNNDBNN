@@ -846,7 +846,7 @@ class GPUDBNN:
         # Load configuration and data
         self.config = DatasetConfig.load_config(self.dataset_name)
         self.target_column = self.config['target_column']
-
+        self.training_save_path = self.config['training_params']['training_save_path']
         # Initialize model components
         self.scaler = StandardScaler()
         self.label_encoder = LabelEncoder()
