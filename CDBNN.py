@@ -41,6 +41,86 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def load_global_config(dataset_name: str):
+    """Load global configuration parameters with improved handling"""
+    try:
+        # Define the path to the configuration file
+        config_path = os.path.join("data", dataset_name, "adaptive_dbnn.conf")
+
+        # Check if the configuration file exists
+        if not os.path.exists(config_path):
+            raise FileNotFoundError(f"Configuration file not found at {config_path}")
+
+        # Read and process the configuration file
+        with open(config_path, 'r') as f:
+            config_str = f.read()
+
+        # Clean comments and parse JSON
+        clean_config = remove_comments(config_str)
+        config = json.loads(clean_config)
+
+        # Define globals
+        global Trials, cardinality_threshold, cardinality_tolerance
+        global LearningRate, TrainingRandomSeed, Epochs, TestFraction, Fresh
+        global Train, Train_only, Predict, Gen_Samples, EnableAdaptive, nokbd
+        global Train_device, modelType, use_previous_model
+
+        # Load training parameters
+        training_params = config['training_params']
+        Trials = training_params['trials']
+        cardinality_threshold = training_params['cardinality_threshold']
+        cardinality_tolerance = training_params['cardinality_tolerance']
+        LearningRate = training_params['learning_rate']
+        TrainingRandomSeed = training_params['random_seed']
+        Epochs = training_params['epochs']
+        TestFraction = training_params['test_fraction']
+        EnableAdaptive = training_params['enable_adaptive']
+        usekbd = training_params['use_interactive_kbd']
+        Train_device = training_params['compute_device']
+        modelType = training_params['modelType']
+        DEBUG.log(f"Using model type: {modelType}")
+
+        # Load execution flags
+        execution_flags = config['execution_flags']
+        Train = execution_flags['train']
+        Train_only = execution_flags['train_only']
+        Predict = execution_flags['predict']
+        Gen_Samples = execution_flags['gen_samples']
+        Fresh = execution_flags['fresh_start']
+        use_previous_model = execution_flags.get('use_previous_model', True)  # Default to True if not specified
+
+        DEBUG.log(f"Fresh training is set to: {Fresh}")
+        DEBUG.log(f"Use previous model is set to: {use_previous_model}")
+
+        nokbd = not usekbd
+        if Train_device == 'auto':
+            Train_device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+        print(f"System is set to work on {Train_device}")
+        if nokbd:
+            print("Interactive keys disabled")
+
+        return Fresh, use_previous_model  # Return both flags
+
+    except Exception as e:
+        print(f"Error loading configuration: {str(e)}")
+        # Set default values
+        LearningRate = 0.1
+        TrainingRandomSeed = 42
+        Epochs = 1000
+        TestFraction = 0.2
+        Train = True
+        Train_only = False
+        Predict = True
+        Gen_Samples = False
+        EnableAdaptive = True
+        nokbd = False
+        Train_device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        modelType = 'Gaussian'
+        use_previous_model = True
+        print("Using default values")
+        return False, True
+
 class DebugLogger:
     def __init__(self):
         self.enabled = False
@@ -1931,6 +2011,11 @@ def main(args=None):
                 processor.generate_json(train_dir, test_dir)
                 with open(config_path, 'r') as f:
                     config = json.load(f)
+
+        # Load global configuration
+        dataset_name = config['dataset']['name']
+        load_global_config(dataset_name)
+
         # Create processor instance
         processor = DatasetProcessor(config['dataset']['name'])
 
