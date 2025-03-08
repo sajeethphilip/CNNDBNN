@@ -1173,7 +1173,6 @@ class GPUDBNN:
             DEBUG.log(f" Error loading dataset: {str(e)}")
             DEBUG.log(" Stack trace:", traceback.format_exc())
             raise RuntimeError(f"Failed to load dataset: {str(e)}")
-
     def _compute_batch_posterior(self, features: torch.Tensor, epsilon: float = 1e-10):
         """Optimized batch posterior with vectorized operations"""
         # Safety checks
@@ -1638,7 +1637,8 @@ class GPUDBNN:
             X = X.drop(columns=[self.target_column])
             y = self.data[self.target_column]
             DEBUG.log(f"Initial data shape: X={X.shape}, y={len(y)}")
-
+            y = self.data[self.target_column]
+            DEBUG.log(f" Initial data shape: X={X.shape}, y={len(y)}")
             # Initialize label encoder if not already done
             if not hasattr(self.label_encoder, 'classes_'):
                 self.label_encoder.fit(y)

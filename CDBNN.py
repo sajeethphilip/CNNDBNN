@@ -44,10 +44,14 @@ class DatasetProcessor:
     def __init__(self, datafile="MNIST", datatype="torchvision", output_dir="data"):
         self.datafile = datafile
         self.datatype = datatype
-        self.output_dir = output_dir
+        self.basename = os.path.splitext(os.path.basename(datafile))[0].lower()
+        self.output_dir = os.path.join(output_dir, self.basename)  # Store files in data/<basename>
+
+        # Create output directory if it doesn't exist
+        os.makedirs(self.output_dir, exist_ok=True)
 
         # Load config if exists
-        config_path = os.path.join(output_dir, f"{datafile}.json")
+        config_path = os.path.join(self.output_dir, f"{self.basename}.json")
         if os.path.exists(config_path):
             with open(config_path, 'r') as f:
                 self.config = json.load(f)
@@ -321,7 +325,7 @@ class DatasetProcessor:
             }
         }
 
-        json_path = os.path.join(self.output_dir, f"{dataset_name}.json")
+        json_path = os.path.join(self.output_dir, f"{self.basename}.json")  # Save in data/<basename>
         with open(json_path, "w") as json_file:
             json.dump(json_data, json_file, indent=4)
         print(f"JSON file created at {json_path}")
@@ -646,8 +650,11 @@ class AdaptiveCNNDBNN:
         logger.info("Preparing custom dataset...")
         prefix = self.get_output_prefix()
         dataset_name = self.config['dataset']['name'].lower()
-        csv_path = f"{prefix}_{dataset_name}.csv"
-        conf_path = f"{prefix}_{dataset_name}.conf"
+        output_dir = os.path.join("data", dataset_name)  # Store in data/<basename>
+        os.makedirs(output_dir, exist_ok=True)
+
+        csv_path = os.path.join(output_dir, f"{dataset_name}_features.csv")
+        conf_path = os.path.join(output_dir, f"{dataset_name}.conf")
 
         compute_device = self.device
         storage_device = torch.device('cpu')
@@ -808,8 +815,11 @@ class AdaptiveCNNDBNN:
     def sync_configs(self):
         prefix = self.get_output_prefix()
         dataset_name = self.config['dataset']['name'].lower()
-        dbnn_config_path = f"{prefix}_{dataset_name}.conf"
-        csv_path = f"{prefix}_{dataset_name}.csv"
+        output_dir = os.path.join("data", dataset_name)  # Store in data/<basename>
+        os.makedirs(output_dir, exist_ok=True)
+
+        dbnn_config_path = os.path.join(output_dir, f"{dataset_name}.conf")
+        csv_path = os.path.join(output_dir, f"{dataset_name}_features.csv")
 
         # Default DBNN configuration
         default_config = {
@@ -1013,6 +1023,10 @@ class AdaptiveCNNDBNN:
 
     def save_training_files(self):
         """Move training files to organized directory structure."""
+        dataset_name = self.config['dataset']['name'].lower()
+        output_dir = os.path.join("data", dataset_name)
+        os.makedirs(output_dir, exist_ok=True)
+
         source_files = [
             f'{self.dataset_name}_Last_testing.csv',
             f'{self.dataset_name}_Last_training.csv',
@@ -1021,13 +1035,14 @@ class AdaptiveCNNDBNN:
 
         for file in source_files:
             if os.path.exists(file):
-                dest_path = os.path.join(self.log_dir, file)
+                dest_path = os.path.join(output_dir, file)
                 shutil.move(file, dest_path)
                 logger.info(f"Moved {file} to {dest_path}")
 
     def load_previous_training_data(self):
         """Load previous training data from disk with size verification."""
-        training_data_path = os.path.join(self.log_dir, f'{self.dataset_name}_Last_training.csv')
+        dataset_name = self.config['dataset']['name'].lower()
+        training_data_path = os.path.join("data", dataset_name, f"{dataset_name}_Last_training.csv")
         if os.path.exists(training_data_path):
             previous_data = pd.read_csv(training_data_path)
             logger.info(f"Loading previous training data from {training_data_path}: {len(previous_data)} samples")
@@ -1565,7 +1580,7 @@ def main(args=None):
             else:
                 dataset_name = os.path.basename(os.path.abspath(datafile))
 
-            config_path = os.path.join("data", f"{dataset_name}.json")
+            config_path = os.path.join("data", f"{dataset_name}/{dataset_name}.json")
 
             if os.path.exists(config_path):
                 overwrite = input(f"Config file {config_path} exists. Overwrite? (y/n): ").lower() == 'y'
