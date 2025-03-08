@@ -1571,7 +1571,7 @@ def main(args=None):
                 config = json.load(f)
         else:
             # Get dataset info and create config
-            datafile = input("Enter dataset name or path (default: MNIST): ").strip() or "MNIST"
+            datafile = input("Enter dataset name or path (default: mnist): ").strip() or "mnist"
             datatype = input("Enter dataset type (torchvision/custom) (default: torchvision): ").strip() or "torchvision"
 
             if datatype == 'torchvision':
