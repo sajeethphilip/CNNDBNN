@@ -507,6 +507,8 @@ class CNNDBNN(GPUDBNN):
 
     def __init__(self, dataset_name: str, feature_dims: int, device: str = 'cuda' if torch.cuda.is_available() else 'cpu'):
         """Initialize with CNN-specific parameters."""
+        super().__init__(dataset_name=dataset_name, device=device)
+        self.config = self.load_config(dataset_name)  # Ensure config is loaded
         self.feature_dims = feature_dims
         # Convert torch.device to string if needed
         if isinstance(device, torch.device):
@@ -1113,7 +1115,7 @@ class AdaptiveCNNDBNN:
 
         self.classifier.update_data(train_features, train_labels)
         logger.info(f"Training DBNN classifier with {len(train_labels)} samples...")
-        dbnn_results = self.classifier.adaptive_fit_predict()
+        dbnn_results = self.classifier.adaptive_fit_predict(config=self.config)
 
         self.save_training_files()
         self.create_training_animations()  # Create animations after training is complete
