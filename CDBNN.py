@@ -674,7 +674,21 @@ class CDBNN(GPUDBNN):
     def __init__(self, dataset_name: str, config: Dict, **kwargs):
         """Initialize the CDBNN class with the given config."""
         super().__init__(dataset_name, **kwargs)
-        self.config = config  # Store the config as a class attribute
+
+    def load_config(dataset_name: str) -> Dict:
+        """Load configuration from file."""
+        config_path = f"data/{dataset_name}/{dataset_name}.conf"
+        if not os.path.exists(config_path):
+            raise FileNotFoundError(f"Configuration file not found: {config_path}")
+
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+
+        return config
+
+    config = load_config(dataset_name)
+
+    self.config = config  # Store the config as a class attribute
 
     def adaptive_fit_predict(self, max_rounds: int = 10,
                             improvement_threshold: float = 0.001,
