@@ -331,6 +331,8 @@ class DatasetProcessor:
         print(f"JSON file created at {json_path}")
         return json_path
 
+
+
 class CombinedDataset(Dataset):
     def __init__(self, train_dataset, test_dataset):
         self.combined_data = ConcatDataset([train_dataset, test_dataset])
@@ -507,7 +509,6 @@ class CNNDBNN(GPUDBNN):
 
     def __init__(self, dataset_name: str, feature_dims: int, device: str = 'cuda' if torch.cuda.is_available() else 'cpu'):
         """Initialize with CNN-specific parameters."""
-        self.config = self.load_config(dataset_name)  # Ensure config is loaded
         self.feature_dims = feature_dims
         # Convert torch.device to string if needed
         if isinstance(device, torch.device):
@@ -569,6 +570,294 @@ class CNNDBNN(GPUDBNN):
         for class_id, count in self.class_counts.items():
             logger.info(f"Class {class_id}: {count} samples")
 
+class CDBNN(GPUDBNN):
+    """Custom DBNN class that inherits from GPUDBNN and handles config properly."""
+
+    def __init__(self, dataset_name: str, config: Dict, **kwargs):
+        """Initialize the CDBNN class with the given config."""
+        super().__init__(dataset_name, **kwargs)
+        self.config = config  # Store the config as a class attribute
+
+    def adaptive_fit_predict(self, max_rounds: int = 10,
+                            improvement_threshold: float = 0.001,
+                            load_epoch: int = None,
+                            batch_size: int = 32):
+        """
+        Modified adaptive training strategy that monitors overall improvement across rounds.
+        Stops if adding new samples doesn't improve accuracy after several rounds.
+        """
+        DEBUG.log(" Starting adaptive_fit_predict")
+        if not EnableAdaptive:
+            print("Adaptive learning is disabled. Using standard training.")
+            return self.fit_predict(batch_size=batch_size)
+
+        # Ensure config is available
+        config = self.config  # Use the class attribute
+
+        self.in_adaptive_fit = True
+        train_indices = []
+        test_indices = None
+
+        try:
+            # Get initial data
+            column_names = config['column_names']
+            X = self.data[column_names]
+            X = X.drop(columns=[self.target_column])
+            y = self.data[self.target_column]
+            DEBUG.log(f"Initial data shape: X={X.shape}, y={len(y)}")
+            y = self.data[self.target_column]
+            DEBUG.log(f" Initial data shape: X={X.shape}, y={len(y)}")
+            # Initialize label encoder if not already done
+            if not hasattr(self.label_encoder, 'classes_'):
+                self.label_encoder.fit(y)
+
+            # Use existing label encoder
+            y_encoded = self.label_encoder.transform(y)
+
+            # Process features and initialize model components if needed
+            X_processed = self._preprocess_data(X, is_training=True)
+            self.X_tensor = torch.FloatTensor(X_processed).to(self.device)
+            self.y_tensor = torch.LongTensor(y_encoded).to(self.device)
+
+            # Initialize train/test indices if not already set
+            if not hasattr(self, 'train_indices'):
+                self.train_indices = []
+            if not hasattr(self, 'test_indices'):
+                self.test_indices = list(range(len(X)))
+            try:
+                # Process initial results
+                results = self.fit_predict(batch_size=batch_size)
+
+                # Calculate accuracy
+                accuracy = 1.0 - results.get('error_rate', 0.0)
+
+                # Handle perfect accuracy
+                if accuracy >= 0.9999:  # Using 0.9999 to account for floating point precision
+                    logger.info("\n" + "="*50)
+                    logger.info("Perfect Accuracy Achieved!")
+                    logger.info("Training Summary:")
+                    logger.info(f"Total Samples: {len(X)}")
+                    logger.info(f"Final Accuracy: {accuracy:.4%}")
+
+                    # Print class distribution
+                    unique_classes = np.unique(y)
+                    logger.info("\nClass Distribution:")
+                    for class_label in unique_classes:
+                        class_count = np.sum(y == class_label)
+                        logger.info(f"Class {class_label}: {class_count} samples")
+
+                    logger.info("\nNo further training needed - model achieved perfect accuracy.")
+                    logger.info("="*50)
+
+                    return {
+                        'train_indices': self.train_indices,
+                        'test_indices': self.test_indices,
+                        'final_accuracy': accuracy,
+                        'error_rate': 0.0,
+                        'status': 'perfect_accuracy'
+                    }
+            except:
+                pass
+            unique_classes = np.unique(y_encoded)
+
+            # Print class distribution
+            for class_label in unique_classes:
+                class_count = np.sum(y_encoded == class_label)
+                print(f"Class {class_label}: {class_count} samples")
+
+            # Handle model state based on flags
+            if self.use_previous_model:
+                print("Loading previous model state")
+                if self._load_model_components():
+                    self._load_best_weights()
+                    self._load_categorical_encoders()
+                    if self.fresh_start:
+                        print("Fresh start with existing model - all data will start in test set")
+                        train_indices = []
+                        test_indices = list(range(len(X)))
+                    else:
+                        # Load previous split
+                        prev_train, prev_test = self.load_last_known_split()
+                        if prev_train is not None:
+                            train_indices = prev_train
+                            test_indices = prev_test
+            else:
+                print("No previous model found - starting fresh")
+                self._clean_existing_model()
+                train_indices = []
+                test_indices = list(range(len(X)))
+
+            # Initialize test indices if still None
+            if test_indices is None:
+                test_indices = list(range(len(X)))
+
+            # Initialize likelihood parameters if needed
+            if self.likelihood_params is None:
+                DEBUG.log(" Initializing likelihood parameters")
+                if modelType == "Histogram":
+                    self.likelihood_params = self._compute_pairwise_likelihood_parallel(
+                        self.X_tensor, self.y_tensor, self.X_tensor.shape[1]
+                    )
+                elif modelType == "Gaussian":
+                    self.likelihood_params = self._compute_pairwise_likelihood_parallel_std(
+                        self.X_tensor, self.y_tensor, self.X_tensor.shape[1]
+                    )
+                DEBUG.log(" Likelihood parameters computed")
+
+            # Initialize weights if needed
+            if self.weight_updater is None:
+                DEBUG.log(" Initializing weight updater")
+                self._initialize_bin_weights()
+                DEBUG.log(" Weight updater initialized")
+
+            # Initialize model weights if needed
+            if self.current_W is None:
+                DEBUG.log(" Initializing model weights")
+                n_classes = len(unique_classes)
+                n_pairs = len(self.feature_pairs) if self.feature_pairs is not None else 0
+                if n_pairs == 0:
+                    raise ValueError("Feature pairs not initialized")
+                self.current_W = torch.full(
+                    (n_classes, n_pairs),
+                    0.1,
+                    device=self.device,
+                    dtype=torch.float32
+                )
+                if self.best_W is None:
+                    self.best_W = self.current_W.clone()
+
+            # Initialize training set if empty
+            if len(train_indices) == 0:
+                # Select minimum samples from each class for initial training
+                for class_label in unique_classes:
+                    class_indices = np.where(y_encoded == class_label)[0]
+                    if len(class_indices) < 2:
+                        selected_indices = class_indices  # Take all available if less than 2
+                    else:
+                        selected_indices = class_indices[:2]  # Take 2 samples from each class
+                    train_indices.extend(selected_indices)
+
+                # Update test indices
+                test_indices = list(set(range(len(X))) - set(train_indices))
+
+            DEBUG.log(f" Initial training set size: {len(train_indices)}")
+            DEBUG.log(f" Initial test set size: {len(test_indices)}")
+
+            # Initialize adaptive learning patience tracking
+            adaptive_patience = 5  # Number of rounds to wait for improvement
+            adaptive_patience_counter = 0
+            best_overall_accuracy = 0
+            best_train_accuracy = 0
+            best_test_accuracy = 0
+
+            # Training loop
+            for round_num in range(max_rounds):
+                print(f"\nRound {round_num + 1}/{max_rounds}")
+                print(f"Training set size: {len(train_indices)}")
+                print(f"Test set size: {len(test_indices)}")
+
+                # Save indices for this epoch
+                self.save_epoch_data(round_num, train_indices, test_indices)
+
+                # Create feature tensors for training
+                X_train = self.X_tensor[train_indices]
+                y_train = self.y_tensor[train_indices]
+
+                # Train the model
+                save_path = f"round_{round_num}_predictions.csv"
+                self.train_indices = train_indices
+                self.test_indices = test_indices
+                results = self.fit_predict(batch_size=batch_size, save_path=save_path)
+
+                # Check training accuracy
+                train_predictions = self.predict(X_train, batch_size=batch_size)
+                train_accuracy = (train_predictions == y_train.cpu()).float().mean()
+                print(f"Training accuracy: {train_accuracy:.4f}")
+
+                # Get test accuracy from results
+                test_accuracy = results['test_accuracy']
+
+                # Check if we're improving overall
+                improved = False
+                if train_accuracy > best_train_accuracy + improvement_threshold:
+                    best_train_accuracy = train_accuracy
+                    improved = True
+                    print(f"Improved training accuracy to {train_accuracy:.4f}")
+
+                if test_accuracy > best_test_accuracy + improvement_threshold:
+                    best_test_accuracy = test_accuracy
+                    improved = True
+                    print(f"Improved test accuracy to {test_accuracy:.4f}")
+
+                if improved:
+                    adaptive_patience_counter = 0
+                else:
+                    adaptive_patience_counter += 1
+                    print(f"No significant overall improvement. Adaptive patience: {adaptive_patience_counter}/{adaptive_patience}")
+                    if adaptive_patience_counter >= adaptive_patience:
+                        print(f"No improvement in accuracy after {adaptive_patience} rounds of adding samples.")
+                        print(f"Best training accuracy achieved: {best_train_accuracy:.4f}")
+                        print(f"Best test accuracy achieved: {best_test_accuracy:.4f}")
+                        print("Stopping adaptive training.")
+                        break
+
+                # Evaluate test data
+                X_test = self.X_tensor[test_indices]
+                y_test = self.y_tensor[test_indices]
+                test_predictions = self.predict(X_test, batch_size=batch_size)
+
+                # Only print test performance header if we didn't just print metrics in fit_predict
+                if not hasattr(self, '_last_metrics_printed') or not self._last_metrics_printed:
+                    print(f"\n{Colors.BLUE}Test Set Performance - Round {round_num + 1}{Colors.ENDC}")
+                    y_test_cpu = y_test.cpu().numpy()
+                    test_predictions_cpu = test_predictions.cpu().numpy()
+                    self.print_colored_confusion_matrix(y_test_cpu, test_predictions_cpu)
+
+                # Reset the metrics printed flag
+                self._last_metrics_printed = False
+
+                if train_accuracy == 1.0:
+                    if len(test_indices) == 0:
+                        print("No more test samples available. Training complete.")
+                        break
+
+                    # Get new training samples from misclassified examples
+                    new_train_indices = self._select_samples_from_failed_classes(
+                        test_predictions, y_test, test_indices
+                    )
+
+                    if not new_train_indices:
+                        print("Achieved 100% accuracy on all data. Training complete.")
+                        self.in_adaptive_fit = False
+                        return {'train_indices': [], 'test_indices': []}
+
+                else:
+                    # Training did not achieve 100% accuracy, select new samples
+                    new_train_indices = self._select_samples_from_failed_classes(
+                        test_predictions, y_test, test_indices
+                    )
+
+                    if not new_train_indices:
+                        print("No suitable new samples found. Training complete.")
+                        break
+
+                # Update training and test sets with new samples
+                train_indices.extend(new_train_indices)
+                test_indices = list(set(test_indices) - set(new_train_indices))
+                print(f"Added {len(new_train_indices)} new samples to training set")
+
+                # Save the current split
+                self.save_last_split(train_indices, test_indices)
+
+            self.in_adaptive_fit = False
+            return {'train_indices': train_indices, 'test_indices': test_indices}
+
+        except Exception as e:
+            DEBUG.log(f" Error in adaptive_fit_predict: {str(e)}")
+            DEBUG.log(" Traceback:", traceback.format_exc())
+            self.in_adaptive_fit = False
+            raise
+
 class AdaptiveCNNDBNN:
     def __init__(self,
                 dataset_name: str,
@@ -601,8 +890,9 @@ class AdaptiveCNNDBNN:
         setup_dbnn_environment(self.device, self.learning_rate)
         self.sync_configs()
 
-        self.classifier = CNNDBNN(
+        self.classifier = CDBNN(
             dataset_name=dataset_name,
+            config=self.config,  # Pass the config
             feature_dims=feature_dims,
             device=device
         )
@@ -1114,7 +1404,7 @@ class AdaptiveCNNDBNN:
 
         self.classifier.update_data(train_features, train_labels)
         logger.info(f"Training DBNN classifier with {len(train_labels)} samples...")
-        dbnn_results = self.classifier.adaptive_fit_predict(config=self.config)
+        dbnn_results = self.classifier.adaptive_fit_predict()
 
         self.save_training_files()
         self.create_training_animations()  # Create animations after training is complete

@@ -1624,9 +1624,6 @@ class GPUDBNN:
         if not EnableAdaptive:
             print("Adaptive learning is disabled. Using standard training.")
             return self.fit_predict(batch_size=batch_size)
-        # Ensure config is available
-        if config is None:
-            config = self.config  # Use class attribute if config is not passed
 
         self.in_adaptive_fit = True
         train_indices = []
