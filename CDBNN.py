@@ -577,7 +577,7 @@ class CDBNN(GPUDBNN):
         """Initialize the CDBNN class with the given config."""
         super().__init__(dataset_name, **kwargs)
         self.config = config  # Store the config as a class attribute
-        self.feature_dims = feature_dims  # Store feature dimensions
+
     def adaptive_fit_predict(self, max_rounds: int = 10,
                             improvement_threshold: float = 0.001,
                             load_epoch: int = None,
@@ -893,7 +893,7 @@ class AdaptiveCNNDBNN:
         self.classifier = CDBNN(
             dataset_name=dataset_name,
             config=self.config,  # Pass the config
-            feature_dims=feature_dims,
+            #feature_dims=feature_dims,
             device=device
         )
 
