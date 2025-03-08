@@ -674,9 +674,10 @@ class CDBNN(GPUDBNN):
     def __init__(self, dataset_name: str, config: Dict, **kwargs):
         """Initialize the CDBNN class with the given config."""
         super().__init__(dataset_name, **kwargs)
-
-    def load_config(dataset_name: str) -> Dict:
+        self.dataset_name=dataset_name
+    def load_config()
         """Load configuration from file."""
+        dataset_name=self.dataset_name
         config_path = f"data/{dataset_name}/{dataset_name}.conf"
         if not os.path.exists(config_path):
             raise FileNotFoundError(f"Configuration file not found: {config_path}")
@@ -686,7 +687,8 @@ class CDBNN(GPUDBNN):
 
         return config
 
-    config = load_config(dataset_name)
+    dataset_name=self.dataset_name
+    config = load_config()
 
     self.config = config  # Store the config as a class attribute
 
