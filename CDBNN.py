@@ -858,6 +858,29 @@ class CDBNN(GPUDBNN):
             self.in_adaptive_fit = False
             raise
 
+    def update_data(self, features: torch.Tensor, labels: torch.Tensor):
+        """Update internal data with new features and labels."""
+        features_np = features.cpu().numpy()
+        labels_np = labels.cpu().numpy()
+
+        # Create a DataFrame with the new features and labels
+        feature_cols = [f'feature_{i}' for i in range(features_np.shape[1])]
+        self.data = pd.DataFrame(features_np, columns=feature_cols)
+        self.data['target'] = labels_np
+
+        # Update training set size in the model
+        self.n_train = len(self.data)
+        self.n_test = 0  # Will be set during adaptive_fit_predict
+
+        # Update cardinality parameters
+        unique_labels, counts = np.unique(labels_np, return_counts=True)
+        self.class_counts = dict(zip(unique_labels, counts))
+        self.n_classes = len(unique_labels)
+
+        logger.info(f"Updated DBNN with {self.n_train} samples")
+        for class_id, count in self.class_counts.items():
+            logger.info(f"Class {class_id}: {count} samples")
+
 class AdaptiveCNNDBNN:
     def __init__(self,
                 dataset_name: str,
