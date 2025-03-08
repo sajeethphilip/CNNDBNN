@@ -505,11 +505,9 @@ def setup_dbnn_environment(device: str, learning_rate: float):
 class CNNDBNN(GPUDBNN):
     """DBNN subclass specifically for handling CNN feature extraction outputs."""
 
-    def __init__(self, dataset_name: str, feature_dims: int, device: str = 'cuda' if torch.cuda.is_available() else 'cpu', config: Dict = None):
+    def __init__(self, dataset_name: str, feature_dims: int, device: str = 'cuda' if torch.cuda.is_available() else 'cpu'):
         """Initialize with CNN-specific parameters."""
         self.feature_dims = feature_dims
-        self.config = config  # Store the config in the class instance
-
         # Convert torch.device to string if needed
         if isinstance(device, torch.device):
             device = device.type
@@ -518,33 +516,9 @@ class CNNDBNN(GPUDBNN):
         if not os.path.exists(f"data/{dataset_name}/{dataset_name}.conf"):
             raise FileNotFoundError(f"Configuration file {dataset_name}.conf not found")
 
-        # Initialize the parent class (GPUDBNN) without passing config
         super().__init__(
             dataset_name=dataset_name,
             device=device
-        )
-
-    def adaptive_fit_predict(self, max_rounds: int = 10,
-                            improvement_threshold: float = 0.001,
-                            load_epoch: int = None,
-                            batch_size: int = 32):
-        """
-        Override the adaptive_fit_predict method to ensure the config is properly handled.
-        """
-        # Ensure the config is available
-        if not hasattr(self, 'config') or self.config is None:
-            raise ValueError("Configuration not found. Please provide a valid config.")
-
-        # Access the column names from the config
-        column_names = self.config['column_names']
-        logger.info(f"Using column names from config: {column_names}")
-
-        # Call the parent class's adaptive_fit_predict method
-        return super().adaptive_fit_predict(
-            max_rounds=max_rounds,
-            improvement_threshold=improvement_threshold,
-            load_epoch=load_epoch,
-            batch_size=batch_size
         )
 
     def _load_dataset(self) -> pd.DataFrame:
@@ -594,27 +568,29 @@ class CNNDBNN(GPUDBNN):
         for class_id, count in self.class_counts.items():
             logger.info(f"Class {class_id}: {count} samples")
 
-class AdaptiveCNNDBNN(CNNDBNN):
-    def __init__(self, dataset_name: str, in_channels: int = 1, feature_dims: int = 128,
-                 device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
-                 learning_rate: float = 0.001, config: Optional[Dict] = None):
-        # Initialize the parent class (CNNDBNN) with the config
-        super().__init__(
-            dataset_name=dataset_name,
-            feature_dims=feature_dims,
-            device=device,
-            config=config
-        )
-        # Additional initialization for AdaptiveCNNDBNN
+class AdaptiveCNNDBNN:
+    def __init__(self,
+                dataset_name: str,
+                in_channels: int = 1,
+                feature_dims: int = 128,
+                device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
+                learning_rate: float = 0.001,
+                config: Optional[Dict] = None):
+        self.device = device if isinstance(device, torch.device) else torch.device(device)
+        self.feature_dims = feature_dims
         self.learning_rate = learning_rate
+        self.dataset_name = dataset_name
+        self.config = config or {}
+
+        # Initialize feature extractor with correct channels
         self.feature_extractor = FeatureExtractorCNN(
-            in_channels=in_channels,
+            in_channels=self.config['dataset']['in_channels'],  # Use config value
             feature_dims=feature_dims
         ).to(device)
+
         self.training_log = []
         self.log_dir = os.path.join('Traininglog', self.dataset_name)
         os.makedirs(self.log_dir, exist_ok=True)
-
 
 
         # Prepare CNN features first
