@@ -513,7 +513,7 @@ class CNNDBNN(GPUDBNN):
             device = device.type
 
         # Ensure dataset name matches the files created
-        if not os.path.exists(f"{dataset_name}.conf"):
+        if not os.path.exists(f"data/{dataset_name}/{dataset_name}.conf"):
             raise FileNotFoundError(f"Configuration file {dataset_name}.conf not found")
 
         super().__init__(
