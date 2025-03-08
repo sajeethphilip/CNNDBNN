@@ -687,7 +687,7 @@ class CDBNN(GPUDBNN):
 
         return config
 
-    dataset_name=self.dataset_name
+
     config = self.load_config(dataset_name)
 
     self.config = config  # Store the config as a class attribute
