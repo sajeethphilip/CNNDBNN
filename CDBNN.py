@@ -507,7 +507,6 @@ class CNNDBNN(GPUDBNN):
 
     def __init__(self, dataset_name: str, feature_dims: int, device: str = 'cuda' if torch.cuda.is_available() else 'cpu'):
         """Initialize with CNN-specific parameters."""
-        super().__init__(dataset_name=dataset_name, device=device)
         self.config = self.load_config(dataset_name)  # Ensure config is loaded
         self.feature_dims = feature_dims
         # Convert torch.device to string if needed
