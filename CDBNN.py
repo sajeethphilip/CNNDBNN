@@ -41,6 +41,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+class DebugLogger:
+    def __init__(self):
+        self.enabled = False
+
+    def enable(self):
+        self.enabled = True
+
+    def disable(self):
+        self.enabled = False
+
+    def log(self, msg, force=False):
+        """Only print if enabled or forced"""
+        if self.enabled or force:
+            print(msg)
+
+# Create single global instance
+DEBUG = DebugLogger()
 class DatasetProcessor:
     def __init__(self, datafile="MNIST", datatype="torchvision", output_dir="data"):
         self.datafile = datafile
