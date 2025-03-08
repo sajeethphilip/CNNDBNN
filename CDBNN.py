@@ -673,7 +673,6 @@ class CDBNN(GPUDBNN):
 
     def __init__(self, dataset_name: str, config: Dict, **kwargs):
         """Initialize the CDBNN class with the given config."""
-        super().__init__(dataset_name, **kwargs)
         self.dataset_name=dataset_name
 
     def load_config(self,dataset_name: str) -> Dict:
