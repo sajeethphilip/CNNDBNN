@@ -44,7 +44,7 @@ class DatasetProcessor:
     def __init__(self, datafile="MNIST", datatype="torchvision", output_dir="data"):
         self.datafile = datafile
         self.datatype = datatype
-        self.basename = os.path.splitext(os.path.basename(datafile))[0].lower()
+        self.basename = os.path.splitext(os.path.basename(datafile))[0]
         self.output_dir = os.path.join(output_dir, self.basename)  # Store files in data/<basename>
 
         # Create output directory if it doesn't exist
@@ -649,7 +649,7 @@ class AdaptiveCNNDBNN:
         """Prepare CNN features and configuration for DBNN"""
         logger.info("Preparing custom dataset...")
         prefix = self.get_output_prefix()
-        dataset_name = self.config['dataset']['name'].lower()
+        dataset_name = self.config['dataset']['name']
         output_dir = os.path.join("data", dataset_name)  # Store in data/<basename>
         os.makedirs(output_dir, exist_ok=True)
 
@@ -758,7 +758,7 @@ class AdaptiveCNNDBNN:
 
     def create_dbnn_config(self):
         """Create DBNN configuration file from CNN config and dataset info"""
-        dataset_name = self.dataset_name.lower()
+        dataset_name = self.dataset_name
         config_path = f"{dataset_name}.conf"
 
         # Generate CSV path that will store extracted features
@@ -814,7 +814,7 @@ class AdaptiveCNNDBNN:
 
     def sync_configs(self):
         prefix = self.get_output_prefix()
-        dataset_name = self.config['dataset']['name'].lower()
+        dataset_name = self.config['dataset']['name']
         output_dir = os.path.join("data", dataset_name)  # Store in data/<basename>
         os.makedirs(output_dir, exist_ok=True)
 
@@ -1023,7 +1023,7 @@ class AdaptiveCNNDBNN:
 
     def save_training_files(self):
         """Move training files to organized directory structure."""
-        dataset_name = self.config['dataset']['name'].lower()
+        dataset_name = self.config['dataset']['name']
         output_dir = os.path.join("data", dataset_name)
         os.makedirs(output_dir, exist_ok=True)
 
@@ -1041,7 +1041,7 @@ class AdaptiveCNNDBNN:
 
     def load_previous_training_data(self):
         """Load previous training data from disk with size verification."""
-        dataset_name = self.config['dataset']['name'].lower()
+        dataset_name = self.config['dataset']['name']
         training_data_path = os.path.join("data", dataset_name, f"{dataset_name}_Last_training.csv")
         if os.path.exists(training_data_path):
             previous_data = pd.read_csv(training_data_path)
@@ -1631,7 +1631,7 @@ def main(args=None):
 
         # Train CNN and extract features
         model = AdaptiveCNNDBNN(
-            dataset_name=config['dataset']['name'].lower(),
+            dataset_name=config['dataset']['name'],
             in_channels=config['dataset']['in_channels'],
             feature_dims=config['model']['feature_dims'],
             device=device,
