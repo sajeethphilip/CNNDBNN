@@ -682,10 +682,6 @@ class CDBNN(GPUDBNN):
             self.config = json.load(f)
 
 
-
-    config = self.config
-
-
     def adaptive_fit_predict(self, max_rounds: int = 10,
                             improvement_threshold: float = 0.001,
                             load_epoch: int = None,
