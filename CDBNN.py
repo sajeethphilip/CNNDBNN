@@ -675,7 +675,7 @@ class CDBNN(GPUDBNN):
         """Initialize the CDBNN class with the given config."""
         super().__init__(dataset_name, **kwargs)
         self.dataset_name=dataset_name
-    def load_config()
+    def load_config(self)
         """Load configuration from file."""
         dataset_name=self.dataset_name
         config_path = f"data/{dataset_name}/{dataset_name}.conf"
@@ -688,7 +688,7 @@ class CDBNN(GPUDBNN):
         return config
 
     dataset_name=self.dataset_name
-    config = load_config()
+    config =self.load_config()
 
     self.config = config  # Store the config as a class attribute
 
