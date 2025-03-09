@@ -2122,10 +2122,16 @@ class GPUDBNN:
         # Sample combinations if max_combinations specified
         if max_combinations and len(all_combinations) > max_combinations:
             rng = np.random.RandomState(42)  # Fixed seed for reproducibility
-            all_combinations = rng.choice(all_combinations, max_combinations, replace=False)
+            # Convert list of tuples to a list of lists and then to a numpy array
+            all_combinations_array = np.array([list(comb) for comb in all_combinations])
+            # Flatten the array to 1D before sampling
+            flat_indices = rng.choice(len(all_combinations), max_combinations, replace=False)
+            sampled_combinations = [all_combinations[i] for i in flat_indices]
+        else:
+            sampled_combinations = all_combinations
 
         # Convert to tensor
-        combinations_tensor = torch.tensor(all_combinations, device=self.device)
+        combinations_tensor = torch.tensor(sampled_combinations, device=self.device)
 
         # Save combinations for future use
         os.makedirs(os.path.dirname(combinations_path), exist_ok=True)
