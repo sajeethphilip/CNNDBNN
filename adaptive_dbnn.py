@@ -1150,42 +1150,37 @@ class GPUDBNN:
         n_classes = len(self.likelihood_params['classes'])
         log_likelihoods = torch.zeros((batch_size, n_classes), device=self.device)
 
-        # Get feature group size from config
-        feature_group_size = self.config.get('likelihood_config', {}).get('feature_group_size', 2)
-
-        # Vectorized computation for all feature groups
         for group_idx, feature_group in enumerate(self.likelihood_params['feature_pairs']):
             bin_edges = self.likelihood_params['bin_edges'][group_idx]
-            bin_probs = self.likelihood_params['bin_probs'][group_idx]  # Shape: [n_classes, n_bins, ..., n_bins]
+            bin_probs = self.likelihood_params['bin_probs'][group_idx]
 
-            # Get feature group data for the entire batch
-            group_data = features[:, feature_group]  # Shape: [batch_size, feature_group_size]
+            # Get bin-specific weights
+            bin_weights = self.weight_updater.get_histogram_weights(
+                class_idx,  # This should be a loop over classes
+                group_idx
+            )[bin_indices[group_idx]]
 
-            # Vectorized binning for all dimensions in the feature group
-            bin_indices = torch.stack([
-                torch.bucketize(group_data[:, dim], bin_edges[dim]) - 1
-                for dim in range(feature_group_size)
-            ]).clamp_(0, bin_probs.shape[1] - 1)  # Shape: [feature_group_size, batch_size]
+            # Ensure bin_weights has the correct shape
+            if bin_weights.dim() == 2:
+                bin_weights = bin_weights.unsqueeze(0)  # Add batch dimension if missing
 
-            # Get bin-specific weights for all classes
-            bin_weights = torch.stack([
-                self.weight_updater.get_histogram_weights(class_idx, group_idx)
-                for class_idx in range(n_classes)
-            ])  # Shape: [n_classes, n_bins, ..., n_bins]
+            # Apply bin-specific weights to probabilities
+            weighted_probs = bin_probs * bin_weights
 
-            # Gather probabilities and weights using advanced indexing
-            # Use dynamic indexing for feature groups of any size
-            weighted_probs = bin_probs[:, bin_indices[0], bin_indices[1], ...] * bin_weights[:, bin_indices[0], bin_indices[1], ...]
+            # Ensure weighted_probs has the correct shape
+            if weighted_probs.dim() == 2:
+                weighted_probs = weighted_probs.unsqueeze(0)  # Add batch dimension if missing
 
             # Sum log-likelihoods across feature groups
-            log_likelihoods += torch.log(weighted_probs + epsilon)
+            group_log_likelihoods = torch.log(weighted_probs + epsilon)
+            log_likelihoods += group_log_likelihoods.sum(dim=1)  # Sum over feature dimensions
 
         # Normalize posteriors
         max_log_likelihood = log_likelihoods.max(dim=1, keepdim=True)[0]
-        posteriors = torch.exp(log_likelihoods - max_log_likelihood)
-        posteriors /= posteriors.sum(dim=1, keepdim=True) + epsilon
+        exp_ll = torch.exp(log_likelihoods - max_log_likelihood)
+        posteriors = exp_ll / (torch.sum(exp_ll, dim=1, keepdim=True) + epsilon)
 
-        return posteriors
+        return posteriors, None
 
     def _compute_batch_posterior_old(self, features: torch.Tensor, epsilon: float = 1e-10):
         """Optimized batch posterior with vectorized operations"""
