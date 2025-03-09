@@ -830,7 +830,7 @@ class GPUDBNN:
         # Add new attribute for bin-specific weights
         self.n_bins_per_dim = n_bins_per_dim
         self.weight_updater = None  # Will be initialized after computing likelihood params
-
+        self.patience=5
         # Load configuration before potential cleanup
         self.config = DatasetConfig.load_config(self.dataset_name)
         self.feature_bounds = None  # Store global min/max for each
