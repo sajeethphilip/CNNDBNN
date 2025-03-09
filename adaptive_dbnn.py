@@ -2539,7 +2539,7 @@ class GPUDBNN:
         }
 
 #---------------------------------------------------------Save Last data -------------------------
-     def save_last_split(self, train_indices: list, test_indices: list):
+    def save_last_split(self, train_indices: list, test_indices: list):
         """Save the last training/testing split to CSV files in the data/<dataset_name>/ folder."""
         dataset_name = self.dataset_name
         dataset_dir = os.path.join("data", dataset_name)
