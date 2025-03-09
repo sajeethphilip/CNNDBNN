@@ -641,7 +641,15 @@ class CNNDBNN(GPUDBNN):
         # If max_combinations specified, sample randomly
         if max_combinations and len(all_pairs) > max_combinations:
             random.seed(42)  # For reproducibility
-            all_pairs = random.sample(all_pairs, max_combinations)
+
+            # Convert all_pairs to a list of indices
+            indices = list(range(len(all_pairs)))
+
+            # Sample indices randomly
+            sampled_indices = random.sample(indices, max_combinations)
+
+            # Use sampled indices to get the corresponding pairs
+            all_pairs = [all_pairs[i] for i in sampled_indices]
 
         # Convert to tensor
         return torch.tensor(all_pairs, device=self.device)
