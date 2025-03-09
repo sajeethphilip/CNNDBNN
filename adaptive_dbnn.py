@@ -6,6 +6,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.metrics import classification_report, confusion_matrix
+from tqdm import tqdm  # Add this import at the top of your script
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -2926,6 +2927,8 @@ class GPUDBNN:
         color = Colors.GREEN if overall_acc >= 0.9 else Colors.YELLOW if overall_acc >= 0.7 else Colors.RED
         print(f"{Colors.BOLD}Overall Accuracy: {color}{overall_acc:.2%}{Colors.ENDC}")
 
+
+
     def train(self, X_train: torch.Tensor, y_train: torch.Tensor, X_test: torch.Tensor, y_test: torch.Tensor, batch_size: int = 32):
         """
         Training loop with proper error tracking, GPU data transfer handling, and epoch logging.
@@ -3005,13 +3008,14 @@ class GPUDBNN:
         predictions = torch.empty(batch_size, dtype=torch.long, device=self.device)
         batch_mask = torch.empty(batch_size, dtype=torch.bool, device=self.device)
 
-        for epoch in range(self.max_epochs):
+        # Wrap the epoch loop with tqdm
+        for epoch in tqdm(range(self.max_epochs), desc="Training Progress", unit="epoch"):
             Trstart_time = time.time()
             failed_cases = []
             n_errors = 0
 
-            # Process training data in batches
-            for i in range(0, n_samples, batch_size):
+            # Process training data in batches with tqdm
+            for i in tqdm(range(0, n_samples, batch_size), desc="Processing Batches", unit="batch", leave=False):
                 batch_end = min(i + batch_size, n_samples)
                 current_batch_size = batch_end - i
 
