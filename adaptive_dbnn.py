@@ -3965,7 +3965,7 @@ def configure_debug(config):
         DEBUG.disable()
 
 def load_global_config():
-    """Load global configuration parameters with improved handling"""
+    """Load global configuration parameters with improved handling."""
     try:
         def remove_comments(json_str):
             # Remove single-line comments (//) and multi-line comments (/* */)
@@ -4029,8 +4029,50 @@ def load_global_config():
 
             return '\n'.join(line.strip() for line in lines if line.strip())
 
+        # Define the path to the global configuration file
+        global_config_path = os.path.join("data", "adaptive_dbnn.conf")
+
+        # If the global config file doesn't exist, create a default one
+        if not os.path.exists(global_config_path):
+            print(f"Global configuration file not found at {global_config_path}. Creating a default one.")
+            default_config = {
+                "training_params": {
+                    "trials": 100,
+                    "cardinality_threshold": 0.9,
+                    "cardinality_tolerance": 4,
+                    "learning_rate": 0.1,
+                    "random_seed": 42,
+                    "epochs": 1000,
+                    "test_fraction": 0.2,
+                    "enable_adaptive": True,
+                    "compute_device": "auto",
+                    "save_training_epochs": True,
+                    "training_save_path": "data/",
+                    "generate_csv_log": True,
+                    "csv_log_filename": "Traininglog.csv",
+                    "modelType": "Gaussian"
+                },
+                "execution_flags": {
+                    "train": True,
+                    "train_only": False,
+                    "predict": True,
+                    "gen_samples": False,
+                    "fresh_start": False,
+                    "use_previous_model": True
+                }
+            }
+
+            # Ensure the data directory exists
+            os.makedirs("data", exist_ok=True)
+
+            # Save the default configuration
+            with open(global_config_path, 'w') as f:
+                json.dump(default_config, f, indent=4)
+
+            print(f"Default configuration saved to {global_config_path}")
+
         # Read and process the configuration file
-        with open("adaptive_dbnn.conf", 'r') as f:
+        with open(global_config_path, 'r') as f:
             config_str = f.read()
 
         # Clean comments and parse JSON
@@ -4053,7 +4095,7 @@ def load_global_config():
         Epochs = training_params['epochs']
         TestFraction = training_params['test_fraction']
         EnableAdaptive = training_params['enable_adaptive']
-        usekbd = training_params['use_interactive_kbd']
+        usekbd = training_params.get('use_interactive_kbd', False)
         Train_device = training_params['compute_device']
         modelType = training_params['modelType']
         DEBUG.log(f"Using model type: {modelType}")
