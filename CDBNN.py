@@ -672,7 +672,6 @@ class CDBNN(GPUDBNN):
     """Custom DBNN class that inherits from GPUDBNN and handles config properly."""
     def __init__(self, dataset_name: str, config: Dict, **kwargs):
         """Initialize the CDBNN class with the given config."""
-        super().__init__()
         self.dataset_name=dataset_name
         config_path = f"data/{dataset_name}/{dataset_name}.conf"
         if not os.path.exists(config_path):
@@ -682,6 +681,8 @@ class CDBNN(GPUDBNN):
             self.config = json.load(f)
         self.target_column = self.config['target_column']
         self.training_save_path = self.config['training_params']['training_save_path']
+        super().__init__()
+
     def adaptive_fit_predict(self, max_rounds: int = 10,
                             improvement_threshold: float = 0.001,
                             load_epoch: int = None,
