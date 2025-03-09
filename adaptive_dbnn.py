@@ -122,6 +122,7 @@ class DatasetConfig:
             "test_fraction": 0.2,
             "enable_adaptive": True,
             "compute_device": "auto",
+            "modelType": "Histogram",
             "save_training_epochs": True,  # New: Enable saving epoch logs
             "training_save_path": "data/<inputfile_basename>/",  # New: Output directory
             "generate_csv_log": True,  # New: Enable CSV log generation
