@@ -40,6 +40,29 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+            # Remove comments and parse
+def remove_comments(json_str):
+    lines = []
+    in_multiline_comment = False
+    for line in json_str.split('\n'):
+        if '_comment' in line:
+            continue
+        if '/*' in line and '*/' in line:
+            line = line[:line.find('/*')] + line[line.find('*/') + 2:]
+        elif '/*' in line:
+            in_multiline_comment = True
+            line = line[:line.find('/*')]
+        elif '*/' in line:
+            in_multiline_comment = False
+            line = line[line.find('*/') + 2:]
+        elif in_multiline_comment:
+            continue
+        if '//' in line and not ('http://' in line or 'https://' in line):
+            line = line.split('//')[0]
+        stripped = line.strip()
+        if stripped and not stripped.startswith('_comment'):
+            lines.append(stripped)
+    return '\n'.join(lines)
 
 def load_global_config(dataset_name: str):
     """Load global configuration parameters with improved handling"""
