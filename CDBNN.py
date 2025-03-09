@@ -34,127 +34,134 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.utils.data import ConcatDataset, Dataset, DataLoader
 import torch.nn.functional as F
-import traceback  # Add to provide debug
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-def load_global_config(dataset_name: str):
-    """Load global configuration parameters with improved handling"""
-    try:
-        # Define the path to the configuration file
-        config_path = os.path.join("data", dataset_name, "adaptive_dbnn.conf")
-
-        # Check if the configuration file exists
-        if not os.path.exists(config_path):
-            raise FileNotFoundError(f"Configuration file not found at {config_path}")
-
-        # Read and process the configuration file
-        with open(config_path, 'r') as f:
-            config_str = f.read()
-
-        # Clean comments and parse JSON
-        clean_config = remove_comments(config_str)
-        config = json.loads(clean_config)
-
-        # Define globals
-        global Trials, cardinality_threshold, cardinality_tolerance
-        global LearningRate, TrainingRandomSeed, Epochs, TestFraction, Fresh
-        global Train, Train_only, Predict, Gen_Samples, EnableAdaptive, nokbd
-        global Train_device, modelType, use_previous_model
-
-        # Load training parameters
-        training_params = config['training_params']
-        Trials = training_params['trials']
-        cardinality_threshold = training_params['cardinality_threshold']
-        cardinality_tolerance = training_params['cardinality_tolerance']
-        LearningRate = training_params['learning_rate']
-        TrainingRandomSeed = training_params['random_seed']
-        Epochs = training_params['epochs']
-        TestFraction = training_params['test_fraction']
-        EnableAdaptive = training_params['enable_adaptive']
-        usekbd = training_params['use_interactive_kbd']
-        Train_device = training_params['compute_device']
-        modelType = training_params['modelType']
-        DEBUG.log(f"Using model type: {modelType}")
-
-        # Load execution flags
-        execution_flags = config['execution_flags']
-        Train = execution_flags['train']
-        Train_only = execution_flags['train_only']
-        Predict = execution_flags['predict']
-        Gen_Samples = execution_flags['gen_samples']
-        Fresh = execution_flags['fresh_start']
-        use_previous_model = execution_flags.get('use_previous_model', True)  # Default to True if not specified
-
-        DEBUG.log(f"Fresh training is set to: {Fresh}")
-        DEBUG.log(f"Use previous model is set to: {use_previous_model}")
-
-        nokbd = not usekbd
-        if Train_device == 'auto':
-            Train_device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
-        print(f"System is set to work on {Train_device}")
-        if nokbd:
-            print("Interactive keys disabled")
-
-        return Fresh, use_previous_model  # Return both flags
-
-    except Exception as e:
-        print(f"Error loading configuration: {str(e)}")
-        # Set default values
-        LearningRate = 0.1
-        TrainingRandomSeed = 42
-        Epochs = 1000
-        TestFraction = 0.2
-        Train = True
-        Train_only = False
-        Predict = True
-        Gen_Samples = False
-        EnableAdaptive = True
-        nokbd = False
-        Train_device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        modelType = 'Gaussian'
-        use_previous_model = True
-        print("Using default values")
-        return False, True
-
-class DebugLogger:
-    def __init__(self):
-        self.enabled = False
-
-    def enable(self):
-        self.enabled = True
-
-    def disable(self):
-        self.enabled = False
-
-    def log(self, msg, force=False):
-        """Only print if enabled or forced"""
-        if self.enabled or force:
-            print(msg)
-
-# Create single global instance
-DEBUG = DebugLogger()
 class DatasetProcessor:
     def __init__(self, datafile="MNIST", datatype="torchvision", output_dir="data"):
         self.datafile = datafile
         self.datatype = datatype
-        self.basename = os.path.splitext(os.path.basename(datafile))[0]
-        self.output_dir = os.path.join(output_dir, self.basename)  # Store files in data/<basename>
-
-        # Create output directory if it doesn't exist
-        os.makedirs(self.output_dir, exist_ok=True)
+        self.output_dir = output_dir
 
         # Load config if exists
-        config_path = os.path.join(self.output_dir, f"{self.basename}.json")
+        config_path = os.path.join(output_dir, f"{datafile}.json")
         if os.path.exists(config_path):
             with open(config_path, 'r') as f:
                 self.config = json.load(f)
         else:
             self.config = None
+
+    def edit_conf_file(self, conf_path: str) -> dict:
+        """Edit configuration file using system text editor."""
+        if os.name == 'nt':
+            os.system(f'notepad {conf_path}')
+        elif os.name == 'posix':
+            editor = os.environ.get('EDITOR', 'nano')
+            os.system(f'{editor} {conf_path}')
+
+        try:
+            with open(conf_path, 'r') as f:
+                return json.load(f)
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON in conf file: {e}")
+            raise
+
+    def create_dataset_config(self, train_dir: str, test_dir: str) -> dict:
+        """Create initial dataset configuration."""
+        first_image_path = None
+        for root, _, files in os.walk(train_dir):
+            for file in files:
+                if file.endswith(('.png', '.jpg', '.jpeg')):
+                    first_image_path = os.path.join(root, file)
+                    break
+            if first_image_path:
+                break
+
+        with Image.open(first_image_path) as img:
+            input_size = list(img.size)
+            img_tensor = transforms.ToTensor()(img)
+            in_channels = img_tensor.shape[0]
+
+        num_classes = len([d for d in os.listdir(train_dir) if os.path.isdir(os.path.join(train_dir, d))])
+        mean = [0.485, 0.456, 0.406] if in_channels == 3 else [0.5]
+        std = [0.229, 0.224, 0.225] if in_channels == 3 else [0.5]
+
+        return {
+            "dataset": {
+                "name": self.datafile if self.datatype == 'torchvision' else os.path.basename(os.path.abspath(self.datafile)),
+                "type": self.datatype,
+                "in_channels": in_channels,
+                "num_classes": num_classes,
+                "input_size": input_size,
+                "mean": mean,
+                "std": std,
+                "train_dir": train_dir,
+                "test_dir": test_dir
+            },
+            "model": {
+                "feature_dims": 128,
+                "learning_rate": 0.001
+            },
+            "training": {
+                "batch_size": 32,
+                "epochs": 20,
+                "num_workers": 4,
+                "cnn_training": {
+                    "resume": True,
+                    "fresh_start": False,
+                    "min_loss_threshold": 0.01,
+                    "checkpoint_dir": "Model/cnn_checkpoints"
+                }
+            },
+            "execution_flags": {
+                "mode": "train_and_predict",
+                "use_previous_model": True,
+                "fresh_start": False
+            }
+        }
+
+    def handle_config_files(self) -> dict:
+        """Handle creation and editing of all configuration files."""
+        if self.datatype == 'torchvision':
+            dataset_name = self.datafile.upper()
+        else:
+            dataset_name = os.path.basename(os.path.abspath(self.datafile))
+
+        train_dir, test_dir = self.process()
+
+        dataset_config_path = os.path.join(self.output_dir, f"{dataset_name}.json")
+        if os.path.exists(dataset_config_path):
+            print(f"\nDataset config found at: {dataset_config_path}")
+            if input("Would you like to edit the dataset config? (y/n): ").lower() == 'y':
+                self.config = self.edit_conf_file(dataset_config_path)
+            else:
+                with open(dataset_config_path, 'r') as f:
+                    self.config = json.load(f)
+        else:
+            print("\nCreating new dataset configuration...")
+            self.config = self.create_dataset_config(train_dir, test_dir)
+            os.makedirs(self.output_dir, exist_ok=True)
+            with open(dataset_config_path, 'w') as f:
+                json.dump(self.config, f, indent=4)
+            print(f"Created dataset config at: {dataset_config_path}")
+            if input("Would you like to edit the dataset config? (y/n): ").lower() == 'y':
+                self.config = self.edit_conf_file(dataset_config_path)
+
+        return self.config
+
+    def edit_data_config(self):
+        """Edit the data configuration file."""
+        config_path = os.path.join(self.output_dir, f"{self.datafile}.json")
+        if not os.path.exists(config_path):
+            print(f"Warning: Config file not found at {config_path}")
+            return False
+
+        print(f"\nEditing data config at: {config_path}")
+        self.config = self.edit_conf_file(config_path)  # Use the class method instead
+        return True
 
 
     def get_transforms(self, config: Dict, is_train: bool = True) -> transforms.Compose:
@@ -222,19 +229,22 @@ class DatasetProcessor:
                                      for f in os.listdir(train_dir))
                 test_has_images = any(f.endswith(('.png', '.jpg', '.jpeg'))
                                     for f in os.listdir(test_dir))
-
                 if train_has_images and test_has_images:
                     print("Valid dataset folder structure detected. Using existing data.")
-                    return train_dir, test_dir
 
-        # If not a valid folder structure, proceed with normal processing
+        # Get train and test directories based on datatype
         if self.datatype == "torchvision":
-            return self._process_torchvision()
+            train_dir, test_dir = self._process_torchvision()
         elif self.datatype == "custom":
-            return self._process_custom()
+            train_dir, test_dir = self._process_custom()
         else:
             raise ValueError("Unsupported datatype. Use 'torchvision' or 'custom'.")
 
+        # Offer to edit config after processing
+        if input("\nWould you like to edit the data configuration? (y/n): ").lower() == 'y':
+            self.edit_data_config()
+
+        return train_dir, test_dir
 
     def _process_torchvision(self):
         dataset_class = getattr(datasets, self.datafile, None)
@@ -423,13 +433,11 @@ class DatasetProcessor:
             }
         }
 
-        json_path = os.path.join(self.output_dir, f"{self.basename}.json")  # Save in data/<basename>
+        json_path = os.path.join(self.output_dir, f"{dataset_name}.json")
         with open(json_path, "w") as json_file:
             json.dump(json_data, json_file, indent=4)
         print(f"JSON file created at {json_path}")
         return json_path
-
-
 
 class CombinedDataset(Dataset):
     def __init__(self, train_dataset, test_dataset):
@@ -552,7 +560,7 @@ class FeatureExtractorCNN(nn.Module):
             x = self.batch_norm(x)
         return x
 
-def setup_dbnn_environment(device: str, learning_rate: float,dataset_name=None):
+def setup_dbnn_environment(device: str, learning_rate: float):
     """Setup global environment for DBNN."""
     import adaptive_dbnn
     import os
@@ -575,7 +583,7 @@ def setup_dbnn_environment(device: str, learning_rate: float,dataset_name=None):
     os.makedirs('training_data', exist_ok=True)
 
     # Create DBNN config
-    config_path = os.path.join("data", dataset_name, "adaptive_dbnn.conf")
+    config_path = 'adaptive_dbnn.conf'
     config = {
         'training_params': {
             'trials': 100,
@@ -613,7 +621,7 @@ class CNNDBNN(GPUDBNN):
             device = device.type
 
         # Ensure dataset name matches the files created
-        if not os.path.exists(f"data/{dataset_name}/{dataset_name}.conf"):
+        if not os.path.exists(f"{dataset_name}.conf"):
             raise FileNotFoundError(f"Configuration file {dataset_name}.conf not found")
 
         super().__init__(
@@ -641,15 +649,7 @@ class CNNDBNN(GPUDBNN):
         # If max_combinations specified, sample randomly
         if max_combinations and len(all_pairs) > max_combinations:
             random.seed(42)  # For reproducibility
-
-            # Convert all_pairs to a list of indices
-            indices = list(range(len(all_pairs)))
-
-            # Sample indices randomly
-            sampled_indices = random.sample(indices, max_combinations)
-
-            # Use sampled indices to get the corresponding pairs
-            all_pairs = [all_pairs[i] for i in sampled_indices]
+            all_pairs = random.sample(all_pairs, max_combinations)
 
         # Convert to tensor
         return torch.tensor(all_pairs, device=self.device)
@@ -659,324 +659,6 @@ class CNNDBNN(GPUDBNN):
         features_np = features.cpu().numpy()
         labels_np = labels.cpu().numpy()
 
-        feature_cols = [f'feature_{i}' for i in range(features_np.shape[1])]
-        self.data = pd.DataFrame(features_np, columns=feature_cols)
-        self.data['target'] = labels_np
-
-        # Update training set size in the model
-        self.n_train = len(self.data)
-        self.n_test = 0  # Will be set during adaptive_fit_predict
-
-        # Update cardinality parameters
-        unique_labels, counts = np.unique(labels_np, return_counts=True)
-        self.class_counts = dict(zip(unique_labels, counts))
-        self.n_classes = len(unique_labels)
-
-        logger.info(f"Updated DBNN with {self.n_train} samples")
-        for class_id, count in self.class_counts.items():
-            logger.info(f"Class {class_id}: {count} samples")
-
-class CDBNN(GPUDBNN):
-    """Custom DBNN class that inherits from GPUDBNN and handles config properly."""
-    def __init__(self, dataset_name: str, config: Dict, **kwargs):
-        """Initialize the CDBNN class with the given config."""
-        self.dataset_name=dataset_name
-        config_path = f"data/{dataset_name}/{dataset_name}.conf"
-        if not os.path.exists(config_path):
-            raise FileNotFoundError(f"Configuration file not found: {config_path}")
-
-        with open(config_path, 'r') as f:
-            self.config = json.load(f)
-        self.target_column = self.config['target_column']
-        self.training_save_path = self.config['training_params']['training_save_path']
-        super().__init__(dataset_name)
-
-    def adaptive_fit_predict(self, max_rounds: int = 10,
-                            improvement_threshold: float = 0.001,
-                            load_epoch: int = None,
-                            batch_size: int = 32):
-        """
-        Modified adaptive training strategy that monitors overall improvement across rounds.
-        Stops if adding new samples doesn't improve accuracy after several rounds.
-        """
-        DEBUG.log(" Starting adaptive_fit_predict")
-        if not EnableAdaptive:
-            print("Adaptive learning is disabled. Using standard training.")
-            return self.fit_predict(batch_size=batch_size)
-
-        # Ensure config is available
-        config = self.config  # Use the class attribute
-
-        self.in_adaptive_fit = True
-        train_indices = []
-        test_indices = None
-
-        try:
-            # Get initial data
-            column_names = config['column_names']
-            X = self.data[column_names]
-            X = X.drop(columns=[self.target_column])
-            y = self.data[self.target_column]
-            DEBUG.log(f"Initial data shape: X={X.shape}, y={len(y)}")
-            y = self.data[self.target_column]
-            DEBUG.log(f" Initial data shape: X={X.shape}, y={len(y)}")
-            # Initialize label encoder if not already done
-            if not hasattr(self.label_encoder, 'classes_'):
-                self.label_encoder.fit(y)
-
-            # Use existing label encoder
-            y_encoded = self.label_encoder.transform(y)
-
-            # Process features and initialize model components if needed
-            X_processed = self._preprocess_data(X, is_training=True)
-            self.X_tensor = torch.FloatTensor(X_processed).to(self.device)
-            self.y_tensor = torch.LongTensor(y_encoded).to(self.device)
-
-            # Initialize train/test indices if not already set
-            if not hasattr(self, 'train_indices'):
-                self.train_indices = []
-            if not hasattr(self, 'test_indices'):
-                self.test_indices = list(range(len(X)))
-            try:
-                # Process initial results
-                results = self.fit_predict(batch_size=batch_size)
-
-                # Calculate accuracy
-                accuracy = 1.0 - results.get('error_rate', 0.0)
-
-                # Handle perfect accuracy
-                if accuracy >= 0.9999:  # Using 0.9999 to account for floating point precision
-                    logger.info("\n" + "="*50)
-                    logger.info("Perfect Accuracy Achieved!")
-                    logger.info("Training Summary:")
-                    logger.info(f"Total Samples: {len(X)}")
-                    logger.info(f"Final Accuracy: {accuracy:.4%}")
-
-                    # Print class distribution
-                    unique_classes = np.unique(y)
-                    logger.info("\nClass Distribution:")
-                    for class_label in unique_classes:
-                        class_count = np.sum(y == class_label)
-                        logger.info(f"Class {class_label}: {class_count} samples")
-
-                    logger.info("\nNo further training needed - model achieved perfect accuracy.")
-                    logger.info("="*50)
-
-                    return {
-                        'train_indices': self.train_indices,
-                        'test_indices': self.test_indices,
-                        'final_accuracy': accuracy,
-                        'error_rate': 0.0,
-                        'status': 'perfect_accuracy'
-                    }
-            except:
-                pass
-            unique_classes = np.unique(y_encoded)
-
-            # Print class distribution
-            for class_label in unique_classes:
-                class_count = np.sum(y_encoded == class_label)
-                print(f"Class {class_label}: {class_count} samples")
-
-            # Handle model state based on flags
-            if self.use_previous_model:
-                print("Loading previous model state")
-                if self._load_model_components():
-                    self._load_best_weights()
-                    self._load_categorical_encoders()
-                    if self.fresh_start:
-                        print("Fresh start with existing model - all data will start in test set")
-                        train_indices = []
-                        test_indices = list(range(len(X)))
-                    else:
-                        # Load previous split
-                        prev_train, prev_test = self.load_last_known_split()
-                        if prev_train is not None:
-                            train_indices = prev_train
-                            test_indices = prev_test
-            else:
-                print("No previous model found - starting fresh")
-                self._clean_existing_model()
-                train_indices = []
-                test_indices = list(range(len(X)))
-
-            # Initialize test indices if still None
-            if test_indices is None:
-                test_indices = list(range(len(X)))
-
-            # Initialize likelihood parameters if needed
-            if self.likelihood_params is None:
-                DEBUG.log(" Initializing likelihood parameters")
-                if modelType == "Histogram":
-                    self.likelihood_params = self._compute_pairwise_likelihood_parallel(
-                        self.X_tensor, self.y_tensor, self.X_tensor.shape[1]
-                    )
-                elif modelType == "Gaussian":
-                    self.likelihood_params = self._compute_pairwise_likelihood_parallel_std(
-                        self.X_tensor, self.y_tensor, self.X_tensor.shape[1]
-                    )
-                DEBUG.log(" Likelihood parameters computed")
-
-            # Initialize weights if needed
-            if self.weight_updater is None:
-                DEBUG.log(" Initializing weight updater")
-                self._initialize_bin_weights()
-                DEBUG.log(" Weight updater initialized")
-
-            # Initialize model weights if needed
-            if self.current_W is None:
-                DEBUG.log(" Initializing model weights")
-                n_classes = len(unique_classes)
-                n_pairs = len(self.feature_pairs) if self.feature_pairs is not None else 0
-                if n_pairs == 0:
-                    raise ValueError("Feature pairs not initialized")
-                self.current_W = torch.full(
-                    (n_classes, n_pairs),
-                    0.1,
-                    device=self.device,
-                    dtype=torch.float32
-                )
-                if self.best_W is None:
-                    self.best_W = self.current_W.clone()
-
-            # Initialize training set if empty
-            if len(train_indices) == 0:
-                # Select minimum samples from each class for initial training
-                for class_label in unique_classes:
-                    class_indices = np.where(y_encoded == class_label)[0]
-                    if len(class_indices) < 2:
-                        selected_indices = class_indices  # Take all available if less than 2
-                    else:
-                        selected_indices = class_indices[:2]  # Take 2 samples from each class
-                    train_indices.extend(selected_indices)
-
-                # Update test indices
-                test_indices = list(set(range(len(X))) - set(train_indices))
-
-            DEBUG.log(f" Initial training set size: {len(train_indices)}")
-            DEBUG.log(f" Initial test set size: {len(test_indices)}")
-
-            # Initialize adaptive learning patience tracking
-            adaptive_patience = 5  # Number of rounds to wait for improvement
-            adaptive_patience_counter = 0
-            best_overall_accuracy = 0
-            best_train_accuracy = 0
-            best_test_accuracy = 0
-
-            # Training loop
-            for round_num in range(max_rounds):
-                print(f"\nRound {round_num + 1}/{max_rounds}")
-                print(f"Training set size: {len(train_indices)}")
-                print(f"Test set size: {len(test_indices)}")
-
-                # Save indices for this epoch
-                self.save_epoch_data(round_num, train_indices, test_indices)
-
-                # Create feature tensors for training
-                X_train = self.X_tensor[train_indices]
-                y_train = self.y_tensor[train_indices]
-
-                # Train the model
-                save_path = f"round_{round_num}_predictions.csv"
-                self.train_indices = train_indices
-                self.test_indices = test_indices
-                results = self.fit_predict(batch_size=batch_size, save_path=save_path)
-
-                # Check training accuracy
-                train_predictions = self.predict(X_train, batch_size=batch_size)
-                train_accuracy = (train_predictions == y_train.cpu()).float().mean()
-                print(f"Training accuracy: {train_accuracy:.4f}")
-
-                # Get test accuracy from results
-                test_accuracy = results['test_accuracy']
-
-                # Check if we're improving overall
-                improved = False
-                if train_accuracy > best_train_accuracy + improvement_threshold:
-                    best_train_accuracy = train_accuracy
-                    improved = True
-                    print(f"Improved training accuracy to {train_accuracy:.4f}")
-
-                if test_accuracy > best_test_accuracy + improvement_threshold:
-                    best_test_accuracy = test_accuracy
-                    improved = True
-                    print(f"Improved test accuracy to {test_accuracy:.4f}")
-
-                if improved:
-                    adaptive_patience_counter = 0
-                else:
-                    adaptive_patience_counter += 1
-                    print(f"No significant overall improvement. Adaptive patience: {adaptive_patience_counter}/{adaptive_patience}")
-                    if adaptive_patience_counter >= adaptive_patience:
-                        print(f"No improvement in accuracy after {adaptive_patience} rounds of adding samples.")
-                        print(f"Best training accuracy achieved: {best_train_accuracy:.4f}")
-                        print(f"Best test accuracy achieved: {best_test_accuracy:.4f}")
-                        print("Stopping adaptive training.")
-                        break
-
-                # Evaluate test data
-                X_test = self.X_tensor[test_indices]
-                y_test = self.y_tensor[test_indices]
-                test_predictions = self.predict(X_test, batch_size=batch_size)
-
-                # Only print test performance header if we didn't just print metrics in fit_predict
-                if not hasattr(self, '_last_metrics_printed') or not self._last_metrics_printed:
-                    print(f"\n{Colors.BLUE}Test Set Performance - Round {round_num + 1}{Colors.ENDC}")
-                    y_test_cpu = y_test.cpu().numpy()
-                    test_predictions_cpu = test_predictions.cpu().numpy()
-                    self.print_colored_confusion_matrix(y_test_cpu, test_predictions_cpu)
-
-                # Reset the metrics printed flag
-                self._last_metrics_printed = False
-
-                if train_accuracy == 1.0:
-                    if len(test_indices) == 0:
-                        print("No more test samples available. Training complete.")
-                        break
-
-                    # Get new training samples from misclassified examples
-                    new_train_indices = self._select_samples_from_failed_classes(
-                        test_predictions, y_test, test_indices
-                    )
-
-                    if not new_train_indices:
-                        print("Achieved 100% accuracy on all data. Training complete.")
-                        self.in_adaptive_fit = False
-                        return {'train_indices': [], 'test_indices': []}
-
-                else:
-                    # Training did not achieve 100% accuracy, select new samples
-                    new_train_indices = self._select_samples_from_failed_classes(
-                        test_predictions, y_test, test_indices
-                    )
-
-                    if not new_train_indices:
-                        print("No suitable new samples found. Training complete.")
-                        break
-
-                # Update training and test sets with new samples
-                train_indices.extend(new_train_indices)
-                test_indices = list(set(test_indices) - set(new_train_indices))
-                print(f"Added {len(new_train_indices)} new samples to training set")
-
-                # Save the current split
-                self.save_last_split(train_indices, test_indices)
-
-            self.in_adaptive_fit = False
-            return {'train_indices': train_indices, 'test_indices': test_indices}
-
-        except Exception as e:
-            DEBUG.log(f" Error in adaptive_fit_predict: {str(e)}")
-            DEBUG.log(" Traceback:", traceback.format_exc())
-            self.in_adaptive_fit = False
-            raise
-
-    def update_data(self, features: torch.Tensor, labels: torch.Tensor):
-        """Update internal data with new features and labels."""
-        features_np = features.cpu().numpy()
-        labels_np = labels.cpu().numpy()
-
-        # Create a DataFrame with the new features and labels
         feature_cols = [f'feature_{i}' for i in range(features_np.shape[1])]
         self.data = pd.DataFrame(features_np, columns=feature_cols)
         self.data['target'] = labels_np
@@ -1023,13 +705,12 @@ class AdaptiveCNNDBNN:
         csv_path, conf_path = self.prepare_custom_data()
 
         # Sync CNN and DBNN configs
-        setup_dbnn_environment(self.device, self.learning_rate,dataset_name=self.dataset_name)
+        setup_dbnn_environment(self.device, self.learning_rate)
         self.sync_configs()
 
-        self.classifier = CDBNN(
+        self.classifier = CNNDBNN(
             dataset_name=dataset_name,
-            config=self.config,  # Pass the config
-            #feature_dims=feature_dims,
+            feature_dims=feature_dims,
             device=device
         )
 
@@ -1076,12 +757,9 @@ class AdaptiveCNNDBNN:
         """Prepare CNN features and configuration for DBNN"""
         logger.info("Preparing custom dataset...")
         prefix = self.get_output_prefix()
-        dataset_name = self.config['dataset']['name']
-        output_dir = os.path.join("data", dataset_name)  # Store in data/<basename>
-        os.makedirs(output_dir, exist_ok=True)
-
-        csv_path = os.path.join(output_dir, f"{dataset_name}.csv")
-        conf_path = os.path.join(output_dir, f"{dataset_name}.conf")
+        dataset_name = self.config['dataset']['name'].lower()
+        csv_path = f"{prefix}_{dataset_name}.csv"
+        conf_path = f"{prefix}_{dataset_name}.conf"
 
         compute_device = self.device
         storage_device = torch.device('cpu')
@@ -1185,7 +863,7 @@ class AdaptiveCNNDBNN:
 
     def create_dbnn_config(self):
         """Create DBNN configuration file from CNN config and dataset info"""
-        dataset_name = self.dataset_name
+        dataset_name = self.dataset_name.lower()
         config_path = f"{dataset_name}.conf"
 
         # Generate CSV path that will store extracted features
@@ -1239,16 +917,18 @@ class AdaptiveCNNDBNN:
         print(f"Created DBNN configuration file: {config_path}")
         return config_path
 
+
     def sync_configs(self):
         prefix = self.get_output_prefix()
-        dataset_name = self.config['dataset']['name']
-        output_dir = os.path.join("data", dataset_name)  # Store in data/<basename>
-        os.makedirs(output_dir, exist_ok=True)
+        dataset_name = self.config['dataset']['name'].lower()
+        dbnn_config_path = f"{prefix}_{dataset_name}.conf"
+        csv_path = f"{prefix}_{dataset_name}.csv"
 
-        dbnn_config_path = os.path.join(output_dir, f"{dataset_name}.conf")
-        csv_path = os.path.join(output_dir, f"{dataset_name}_features.csv")
+        # Setup paths
+        data_dir = "data"
+        os.makedirs(data_dir, exist_ok=True)
+        json_path = os.path.join(data_dir, f"{dataset_name}.json")
 
-        # Default DBNN configuration
         default_config = {
             'file_path': csv_path,
             'column_names': [f'feature_{i}' for i in range(self.feature_dims)] + ['target'],
@@ -1274,13 +954,11 @@ class AdaptiveCNNDBNN:
             'modelType': 'Histogram'
         }
 
-        # Load existing config if it exists
         existing_config = {}
         if os.path.exists(dbnn_config_path):
             with open(dbnn_config_path, 'r') as f:
                 existing_config = json.load(f)
 
-        # Update default config with existing values
         def deep_update(d, u):
             for k, v in u.items():
                 if isinstance(v, dict):
@@ -1291,24 +969,26 @@ class AdaptiveCNNDBNN:
 
         config = deep_update(default_config, existing_config)
 
-        # Update with new values from JSON if specified
         if 'dbnn' in self.config:
             config = deep_update(config, self.config['dbnn'])
 
-        # Save updated config
         with open(dbnn_config_path, 'w') as f:
             json.dump(config, f, indent=4)
 
-        # Open in default text editor
-        edit = input("Would you like to edit the DBNN configuration? (y/n): ").lower() == 'y'
-        if edit:
-            if os.name == 'nt':  # Windows
-                os.system(f'notepad {dbnn_config_path}')
-            elif os.name == 'posix':  # Linux/Mac
-                editor = os.environ.get('EDITOR', 'nano')  # Default to nano if EDITOR not set
-                os.system(f'{editor} {dbnn_config_path}')
+        processor = DatasetProcessor(self.dataset_name)
 
-            # Reload config after editing
+        edit_json = input("Would you like to edit the JSON configuration? (y/n): ").lower() == 'y'
+        if edit_json:
+            if os.path.exists(json_path):
+                processor.edit_conf_file(json_path)
+                with open(json_path, 'r') as f:
+                    self.config = json.load(f)
+            else:
+                print(f"Warning: JSON config file not found at {json_path}")
+
+        edit_conf = input("Would you like to edit the DBNN configuration? (y/n): ").lower() == 'y'
+        if edit_conf:
+            processor.edit_conf_file(dbnn_config_path)
             with open(dbnn_config_path, 'r') as f:
                 config = json.load(f)
 
@@ -1450,10 +1130,6 @@ class AdaptiveCNNDBNN:
 
     def save_training_files(self):
         """Move training files to organized directory structure."""
-        dataset_name = self.config['dataset']['name']
-        output_dir = os.path.join("data", dataset_name)
-        os.makedirs(output_dir, exist_ok=True)
-
         source_files = [
             f'{self.dataset_name}_Last_testing.csv',
             f'{self.dataset_name}_Last_training.csv',
@@ -1462,14 +1138,13 @@ class AdaptiveCNNDBNN:
 
         for file in source_files:
             if os.path.exists(file):
-                dest_path = os.path.join(output_dir, file)
+                dest_path = os.path.join(self.log_dir, file)
                 shutil.move(file, dest_path)
                 logger.info(f"Moved {file} to {dest_path}")
 
     def load_previous_training_data(self):
         """Load previous training data from disk with size verification."""
-        dataset_name = self.config['dataset']['name']
-        training_data_path = os.path.join("data", dataset_name, f"{dataset_name}_Last_training.csv")
+        training_data_path = os.path.join(self.log_dir, f'{self.dataset_name}_Last_training.csv')
         if os.path.exists(training_data_path):
             previous_data = pd.read_csv(training_data_path)
             logger.info(f"Loading previous training data from {training_data_path}: {len(previous_data)} samples")
@@ -1991,59 +1666,23 @@ def plot_confusion_matrix(true_labels: List, predictions: List,
 
 def main(args=None):
     try:
-        # Load config
         if args and args.config:
-            config_path = args.config
-            with open(config_path, 'r') as f:
+            with open(args.config, 'r') as f:
                 config = json.load(f)
         else:
-            # Get dataset info and create config
-            datafile = input("Enter dataset name or path (default: mnist): ").strip() or "mnist"
+            datafile = input("Enter dataset name or path (default: MNIST): ").strip() or "MNIST"
             datatype = input("Enter dataset type (torchvision/custom) (default: torchvision): ").strip() or "torchvision"
 
-            if datatype == 'torchvision':
-                datafile = datafile.upper()
-                dataset_name = datafile
-            else:
-                dataset_name = os.path.basename(os.path.abspath(datafile))
+            processor = DatasetProcessor(datafile=datafile, datatype=datatype)
+            config = processor.config
+            transform = processor.get_transforms(config)
 
-            config_path = os.path.join("data", f"{dataset_name}/{dataset_name}.json")
-
-            if os.path.exists(config_path):
-                overwrite = input(f"Config file {config_path} exists. Overwrite? (y/n): ").lower() == 'y'
-                if not overwrite:
-                    with open(config_path, 'r') as f:
-                        config = json.load(f)
-                else:
-                    processor = DatasetProcessor(datafile=datafile, datatype=datatype)
-                    train_dir, test_dir = processor.process()
-                    processor.generate_json(train_dir, test_dir)
-                    with open(config_path, 'r') as f:
-                        config = json.load(f)
-            else:
-                processor = DatasetProcessor(datafile=datafile, datatype=datatype)
-                train_dir, test_dir = processor.process()
-                processor.generate_json(train_dir, test_dir)
-                with open(config_path, 'r') as f:
-                    config = json.load(f)
-
-        # Load global configuration
-        dataset_name = config['dataset']['name']
-        load_global_config(dataset_name)
-
-        # Create processor instance
-        processor = DatasetProcessor(config['dataset']['name'])
-
-        # Get transforms first
-        transform = processor.get_transforms(config)
-        # Ask about dataset merging
         merge_datasets = input("Merge train and test datasets for adaptive learning? (y/n, default: n): ").lower() == 'y'
         config['training']['merge_train_test'] = merge_datasets
 
         device = torch.device('cuda' if torch.cuda.is_available() and not config['execution_flags'].get('cpu', False) else 'cpu')
         print(f"Using device: {device}")
 
-        # First, process the data and extract features using CNN
         train_dataset, test_dataset = get_dataset(config, transform)
         train_loader = DataLoader(
             train_dataset,
@@ -2053,23 +1692,30 @@ def main(args=None):
             pin_memory=device.type=='cuda'
         )
 
-        test_loader = DataLoader(
-            test_dataset,
-            batch_size=config['training']['batch_size'],
-            shuffle=False,
-            num_workers=config['training']['num_workers'],
-            pin_memory=device.type=='cuda'
-        )
+        test_loader = None
+        if test_dataset:
+            test_loader = DataLoader(
+                test_dataset,
+                batch_size=config['training']['batch_size'],
+                shuffle=False,
+                num_workers=config['training']['num_workers'],
+                pin_memory=device.type=='cuda'
+            )
 
-        # Train CNN and extract features
         model = AdaptiveCNNDBNN(
-            dataset_name=config['dataset']['name'],
+            dataset_name=config['dataset']['name'].lower(),
             in_channels=config['dataset']['in_channels'],
             feature_dims=config['model']['feature_dims'],
             device=device,
             learning_rate=config['model']['learning_rate'],
             config=config
         )
+
+        if input("\nReview configurations before training? (y/n): ").lower() == 'y':
+            if input("Edit dataset config? (y/n): ").lower() == 'y':
+                processor.edit_data_config()
+            if input("Edit DBNN config? (y/n): ").lower() == 'y':
+                model.sync_configs()
 
         results = model.train(train_loader)
         print("Training completed successfully")
