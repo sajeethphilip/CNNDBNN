@@ -1080,7 +1080,7 @@ class AdaptiveCNNDBNN:
         output_dir = os.path.join("data", dataset_name)  # Store in data/<basename>
         os.makedirs(output_dir, exist_ok=True)
 
-        csv_path = os.path.join(output_dir, f"{dataset_name}_features.csv")
+        csv_path = os.path.join(output_dir, f"{dataset_name}.csv")
         conf_path = os.path.join(output_dir, f"{dataset_name}.conf")
 
         compute_device = self.device
@@ -1189,7 +1189,7 @@ class AdaptiveCNNDBNN:
         config_path = f"{dataset_name}.conf"
 
         # Generate CSV path that will store extracted features
-        csv_path = f"{dataset_name}_features.csv"
+        csv_path = f"{dataset_name}.csv"
 
         # Create DBNN configuration
         dbnn_config = {
@@ -1246,7 +1246,7 @@ class AdaptiveCNNDBNN:
         os.makedirs(output_dir, exist_ok=True)
 
         dbnn_config_path = os.path.join(output_dir, f"{dataset_name}.conf")
-        csv_path = os.path.join(output_dir, f"{dataset_name}_features.csv")
+        csv_path = os.path.join(output_dir, f"{dataset_name}.csv")
 
         # Default DBNN configuration
         default_config = {
