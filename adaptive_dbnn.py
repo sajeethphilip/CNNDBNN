@@ -3017,6 +3017,9 @@ class GPUDBNN:
         # Start time for the training process
         start_time = time.time()
 
+        # Initialize test_accuracy to a default value
+        test_accuracy = 0.0
+
         for epoch in epoch_bar:
             # Track training time
             train_start_time = time.time()
