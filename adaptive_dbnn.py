@@ -2759,10 +2759,10 @@ class GPUDBNN:
         try:
             for i in range(0, len(X), batch_size):
                 batch_X = X[i:min(i + batch_size, len(X))]
-                if modelType=="Histogram":
+                if modelType == "Histogram":
                     # Get posteriors only, ignore bin indices
                     posteriors, _ = self._compute_batch_posterior(batch_X)
-                elif modelType=="Gaussian":
+                elif modelType == "Gaussian":
                     # Get posteriors only, ignore component responsibilities
                     posteriors, _ = self._compute_batch_posterior_std(batch_X)
                 else:
@@ -2930,7 +2930,7 @@ class GPUDBNN:
 
     def train(self, X_train: torch.Tensor, y_train: torch.Tensor, X_test: torch.Tensor, y_test: torch.Tensor, batch_size: int = 32):
         """
-        Training loop that breaks if training accuracy reaches 100% or loss flattens.
+        Optimized training loop with improved memory efficiency and vectorization.
         """
         # Ensure the output directory exists
         os.makedirs(self.training_save_path, exist_ok=True)
