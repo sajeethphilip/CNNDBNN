@@ -1170,10 +1170,12 @@ class GPUDBNN:
                 )
 
                 # Apply bin-specific weights to probabilities
-                weighted_probs = bin_probs[class_idx] * bin_weights[bin_indices[0], bin_indices[1]]
+                weighted_probs = bin_probs[class_idx][bin_indices[0], bin_indices[1]] * bin_weights[bin_indices[0], bin_indices[1]]
 
                 # Compute log-likelihood for this feature pair and class
                 group_log_likelihoods = torch.log(weighted_probs + epsilon)
+
+                # Accumulate log-likelihoods for this class
                 log_likelihoods[:, class_idx] += group_log_likelihoods
 
         # Normalize posteriors using softmax
