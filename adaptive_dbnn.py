@@ -1151,19 +1151,19 @@ class GPUDBNN:
         n_classes = len(self.likelihood_params['classes'])
         log_likelihoods = torch.zeros((batch_size, n_classes), device=self.device)
 
-        for group_idx, feature_group in enumerate(self.likelihood_params['feature_pairs']):
+        for group_idx, feature_pair in enumerate(self.likelihood_params['feature_pairs']):
             bin_edges = self.likelihood_params['bin_edges'][group_idx]
             bin_probs = self.likelihood_params['bin_probs'][group_idx]
 
-            # Get bin indices for the current feature group
+            # Get bin indices for the current feature pair
             bin_indices = torch.stack([
-                torch.bucketize(features[:, pair[0]], bin_edges[0]) - 1,
-                torch.bucketize(features[:, pair[1]], bin_edges[1]) - 1
+                torch.bucketize(features[:, feature_pair[0]], bin_edges[0]) - 1,
+                torch.bucketize(features[:, feature_pair[1]], bin_edges[1]) - 1
             ]).clamp_(0, self.n_bins_per_dim - 1)
 
             # Iterate over all classes to compute log-likelihoods
             for class_idx in range(n_classes):
-                # Get bin-specific weights for this class and feature group
+                # Get bin-specific weights for this class and feature pair
                 bin_weights = self.weight_updater.get_histogram_weights(
                     class_idx,  # Use the current class index
                     group_idx
@@ -1172,7 +1172,7 @@ class GPUDBNN:
                 # Apply bin-specific weights to probabilities
                 weighted_probs = bin_probs[class_idx] * bin_weights[bin_indices[0], bin_indices[1]]
 
-                # Compute log-likelihood for this feature group and class
+                # Compute log-likelihood for this feature pair and class
                 group_log_likelihoods = torch.log(weighted_probs + epsilon)
                 log_likelihoods[:, class_idx] += group_log_likelihoods
 
