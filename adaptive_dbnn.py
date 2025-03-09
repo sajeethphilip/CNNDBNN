@@ -383,7 +383,6 @@ class DatasetConfig:
 
             # Update file_path to point to the CSV file in the same folder
             config['file_path'] = os.path.join("data", dataset_name, f"{dataset_name}.csv")
-            print(config)
             return config
 
         except Exception as e:
@@ -2953,11 +2952,11 @@ class GPUDBNN:
             previous_best_error = self.best_error
 
         # Pre-compute likelihood parameters
-        if self.config['modelType'] == "Histogram":
+        if self.config['training_params']['modelType'] == "Histogram":
             self.likelihood_params = self._compute_pairwise_likelihood_parallel(
                 X_train, y_train, X_train.shape[1]
             )
-        elif self.config['modelType'] == "Gaussian":
+        elif self.config['training_params']['modelType'] == "Gaussian":
             self.likelihood_params = self._compute_pairwise_likelihood_parallel_std(
                 X_train, y_train, X_train.shape[1]
             )
@@ -3007,9 +3006,9 @@ class GPUDBNN:
                 batch_y = y_train[i:batch_end]
 
                 # Compute posteriors for batch
-                if self.config['modelType'] == "Histogram":
+                if self.config['training_params']['modelType'] == "Histogram":
                     posteriors, bin_indices = self._compute_batch_posterior(batch_X)
-                elif self.config['modelType'] == "Gaussian":
+                elif self.config['training_params']['modelType'] == "Gaussian":
                     posteriors, comp_resp = self._compute_batch_posterior_std(batch_X)
 
                 predictions[:current_batch_size] = torch.argmax(posteriors, dim=1)
