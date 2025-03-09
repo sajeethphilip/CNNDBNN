@@ -2928,10 +2928,9 @@ class GPUDBNN:
         print(f"{Colors.BOLD}Overall Accuracy: {color}{overall_acc:.2%}{Colors.ENDC}")
 
 
-
     def train(self, X_train: torch.Tensor, y_train: torch.Tensor, X_test: torch.Tensor, y_test: torch.Tensor, batch_size: int = 32):
         """
-        Training loop with proper error tracking, GPU data transfer handling, and epoch logging.
+        Training loop with separate progress bars for training and testing.
         """
         # Ensure the output directory exists
         os.makedirs(self.training_save_path, exist_ok=True)
@@ -3008,14 +3007,17 @@ class GPUDBNN:
         predictions = torch.empty(batch_size, dtype=torch.long, device=self.device)
         batch_mask = torch.empty(batch_size, dtype=torch.bool, device=self.device)
 
-        # Wrap the epoch loop with tqdm
-        for epoch in tqdm(range(self.max_epochs), desc="Training Progress", unit="epoch"):
+        # Create a tqdm progress bar for epochs
+        epoch_bar = tqdm(range(self.max_epochs), desc="Epochs", unit="epoch")
+
+        for epoch in epoch_bar:
             Trstart_time = time.time()
             failed_cases = []
             n_errors = 0
 
-            # Process training data in batches with tqdm
-            for i in tqdm(range(0, n_samples, batch_size), desc="Processing Batches", unit="batch", leave=False):
+            # Create a tqdm progress bar for training batches
+            batch_bar = tqdm(range(0, n_samples, batch_size), desc="Training", unit="batch", leave=False)
+            for i in batch_bar:
                 batch_end = min(i + batch_size, n_samples)
                 current_batch_size = batch_end - i
 
@@ -3042,6 +3044,16 @@ class GPUDBNN:
                             posteriors[idx].cpu().numpy()
                         ))
 
+                # Update training progress bar with current metrics
+                train_error_rate = n_errors / (i + current_batch_size)
+                batch_bar.set_postfix({
+                    "Error Rate": f"{train_error_rate:.4f}",
+                    "Time": f"{time.time() - Trstart_time:.2f}s"
+                })
+
+            # Close the batch progress bar
+            batch_bar.close()
+
             # Calculate training error rate
             train_error_rate = n_errors / n_samples
             error_rates.append(train_error_rate)
@@ -3058,9 +3070,12 @@ class GPUDBNN:
             Trend_time = time.time()
             training_time = Trend_time - Trstart_time
 
-            print(f"Training time for epoch {epoch + 1} is: {training_time:.2f} seconds")
-            print(f"Epoch {epoch + 1}: Train error rate = {train_error_rate:.4f}, "
-                  f"Test accuracy = {test_accuracy:.4f}")
+            # Update epoch progress bar with current metrics
+            epoch_bar.set_postfix({
+                "Train Error": f"{train_error_rate:.4f}",
+                "Test Accuracy": f"{test_accuracy:.4f}",
+                "Time": f"{training_time:.2f}s"
+            })
 
             # Log the epoch metrics
             train_sample_size = n_samples
