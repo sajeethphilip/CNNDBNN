@@ -177,7 +177,7 @@ class DatasetConfig:
                 print(f"Warning: Could not read header from {config['file_path']}: {str(e)}")
 
         # Add model type configuration
-        config['modelType'] = "Histogram"  # Default to Histogram model
+        config['training_params']['modelType'] = "Histogram"  # Default to Histogram model
 
         # Set the output directory and CSV log file name based on the dataset name
         config['training_params']['training_save_path'] = config['training_params']['training_save_path'].replace(
@@ -2957,11 +2957,11 @@ class GPUDBNN:
             previous_best_error = self.best_error
 
         # Pre-compute likelihood parameters
-        if self.config['modelType'] == "Histogram":
+        if self.config['training_params']['modelType'] == "Histogram":
             self.likelihood_params = self._compute_pairwise_likelihood_parallel(
                 X_train, y_train, X_train.shape[1]
             )
-        elif self.config['modelType'] == "Gaussian":
+        elif self.config['training_params']['modelType'] == "Gaussian":
             self.likelihood_params = self._compute_pairwise_likelihood_parallel_std(
                 X_train, y_train, X_train.shape[1]
             )
@@ -3011,9 +3011,9 @@ class GPUDBNN:
                 batch_y = y_train[i:batch_end]
 
                 # Compute posteriors for batch
-                if self.config['modelType'] == "Histogram":
+                if self.config['training_params']['modelType'] == "Histogram":
                     posteriors, bin_indices = self._compute_batch_posterior(batch_X)
-                elif self.config['modelType'] == "Gaussian":
+                elif self.config['training_params']['modelType'] == "Gaussian":
                     posteriors, comp_resp = self._compute_batch_posterior_std(batch_X)
 
                 predictions[:current_batch_size] = torch.argmax(posteriors, dim=1)
