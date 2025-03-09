@@ -189,6 +189,7 @@ class DatasetConfig:
         # Save the configuration
         config_path = f"data/{dataset_name}/{dataset_name}.conf"
         try:
+            os.makedirs(config_path, exist_ok=True)
             with open(config_path, 'w') as f:
                 json.dump(config, f, indent=4)
             print(f"Created default configuration file: {config_path}")
