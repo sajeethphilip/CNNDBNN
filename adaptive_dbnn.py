@@ -1155,33 +1155,33 @@ class GPUDBNN:
             bin_edges = self.likelihood_params['bin_edges'][group_idx]
             bin_probs = self.likelihood_params['bin_probs'][group_idx]
 
-            # Get bin-specific weights
-            bin_weights = self.weight_updater.get_histogram_weights(
-                class_idx,  # This should be a loop over classes
-                group_idx
-            )[bin_indices[group_idx]]
+            # Get bin indices for the current feature group
+            bin_indices = torch.stack([
+                torch.bucketize(features[:, pair[0]], bin_edges[0]) - 1,
+                torch.bucketize(features[:, pair[1]], bin_edges[1]) - 1
+            ]).clamp_(0, self.n_bins_per_dim - 1)
 
-            # Ensure bin_weights has the correct shape
-            if bin_weights.dim() == 2:
-                bin_weights = bin_weights.unsqueeze(0)  # Add batch dimension if missing
+            # Iterate over all classes to compute log-likelihoods
+            for class_idx in range(n_classes):
+                # Get bin-specific weights for this class and feature group
+                bin_weights = self.weight_updater.get_histogram_weights(
+                    class_idx,  # Use the current class index
+                    group_idx
+                )
 
-            # Apply bin-specific weights to probabilities
-            weighted_probs = bin_probs * bin_weights
+                # Apply bin-specific weights to probabilities
+                weighted_probs = bin_probs[class_idx] * bin_weights[bin_indices[0], bin_indices[1]]
 
-            # Ensure weighted_probs has the correct shape
-            if weighted_probs.dim() == 2:
-                weighted_probs = weighted_probs.unsqueeze(0)  # Add batch dimension if missing
+                # Compute log-likelihood for this feature group and class
+                group_log_likelihoods = torch.log(weighted_probs + epsilon)
+                log_likelihoods[:, class_idx] += group_log_likelihoods
 
-            # Sum log-likelihoods across feature groups
-            group_log_likelihoods = torch.log(weighted_probs + epsilon)
-            log_likelihoods += group_log_likelihoods.sum(dim=1)  # Sum over feature dimensions
-
-        # Normalize posteriors
+        # Normalize posteriors using softmax
         max_log_likelihood = log_likelihoods.max(dim=1, keepdim=True)[0]
         exp_ll = torch.exp(log_likelihoods - max_log_likelihood)
         posteriors = exp_ll / (torch.sum(exp_ll, dim=1, keepdim=True) + epsilon)
 
-        return posteriors, None
+        return posteriors, bin_indices
 
     def _compute_batch_posterior_old(self, features: torch.Tensor, epsilon: float = 1e-10):
         """Optimized batch posterior with vectorized operations"""
