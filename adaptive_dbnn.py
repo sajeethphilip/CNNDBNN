@@ -2925,6 +2925,9 @@ class GPUDBNN:
         # Ensure the output directory exists
         os.makedirs(self.training_save_path, exist_ok=True)
 
+        # Define the log file path
+        log_file_path = os.path.join(self.training_save_path, f"{self.dataset_name}_training_log.csv")
+
         # Store tensors as class attributes for access during training
         self.X_train_tensor = X_train
         self.y_train_tensor = y_train
@@ -2954,11 +2957,11 @@ class GPUDBNN:
             previous_best_error = self.best_error
 
         # Pre-compute likelihood parameters
-        if self.config['training_params']['modelType'] == "Histogram":
+        if self.config['modelType'] == "Histogram":
             self.likelihood_params = self._compute_pairwise_likelihood_parallel(
                 X_train, y_train, X_train.shape[1]
             )
-        elif self.config['training_params']['modelType'] == "Gaussian":
+        elif self.config['modelType'] == "Gaussian":
             self.likelihood_params = self._compute_pairwise_likelihood_parallel_std(
                 X_train, y_train, X_train.shape[1]
             )
@@ -3008,9 +3011,9 @@ class GPUDBNN:
                 batch_y = y_train[i:batch_end]
 
                 # Compute posteriors for batch
-                if self.config['training_params']['modelType'] == "Histogram":
+                if self.config['modelType'] == "Histogram":
                     posteriors, bin_indices = self._compute_batch_posterior(batch_X)
-                elif self.config['training_params']['modelType'] == "Gaussian":
+                elif self.config['modelType'] == "Gaussian":
                     posteriors, comp_resp = self._compute_batch_posterior_std(batch_X)
 
                 predictions[:current_batch_size] = torch.argmax(posteriors, dim=1)
@@ -3050,7 +3053,7 @@ class GPUDBNN:
             # Log the epoch metrics
             train_sample_size = n_samples
             test_size = len(X_test)
-            self.log_training_epoch(epoch, train_sample_size, training_time, 1 - train_error_rate, test_size, 0, test_accuracy)
+            self.log_training_epoch(epoch, train_sample_size, training_time, 1 - train_error_rate, test_size, 0, test_accuracy, log_file_path)
 
             # Update previous values for next iteration
             prev_train_error = train_error_rate
