@@ -1080,7 +1080,7 @@ class AdaptiveCNNDBNN:
         output_dir = os.path.join("data", dataset_name)  # Store in data/<basename>
         os.makedirs(output_dir, exist_ok=True)
 
-        csv_path = os.path.join(output_dir, f"{dataset_name}_features.csv")
+        csv_path = os.path.join(output_dir, f"{dataset_name}.csv")
         conf_path = os.path.join(output_dir, f"{dataset_name}.conf")
 
         compute_device = self.device

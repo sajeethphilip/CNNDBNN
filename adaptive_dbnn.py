@@ -4026,11 +4026,11 @@ def remove_comments(json_str):
 
         return '\n'.join(line.strip() for line in lines if line.strip())
 
-def load_global_config():
+def load_global_config(dataset=None):
     """Load global configuration parameters with improved handling."""
     try:
         # Define the path to the global configuration file
-        global_config_path = os.path.join("data", "adaptive_dbnn.conf")
+        global_config_path = os.path.join("data", dataset,"adaptive_dbnn.conf")
 
         # If the global config file doesn't exist, create a default one
         if not os.path.exists(global_config_path):
@@ -4143,11 +4143,11 @@ def load_global_config():
 
 if __name__ == "__main__":
     # Load configuration before class definition
-    fresh_start, use_previous_model = load_global_config()
+    #fresh_start, use_previous_model = load_global_config()
 
     # Debug: Print configuration values
-    DEBUG.log(f"Fresh start: {fresh_start}")
-    DEBUG.log(f"Use previous model: {use_previous_model}")
+    #DEBUG.log(f"Fresh start: {fresh_start}")
+    #DEBUG.log(f"Use previous model: {use_previous_model}")
     DEBUG.log(f"Train: {Train}")
     DEBUG.log(f"Train_only: {Train_only}")
     DEBUG.log(f"Predict: {Predict}")
@@ -4239,7 +4239,7 @@ if __name__ == "__main__":
 
         # Debug: Print dataset configuration
         DEBUG.log(f"Config for {dataset}: {config}")
-
+        fresh_start, use_previous_model = load_global_config(dataset)
         model = GPUDBNN(
             dataset_name=dataset,
             learning_rate=LearningRate,
