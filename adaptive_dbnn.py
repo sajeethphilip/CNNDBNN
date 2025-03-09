@@ -383,7 +383,7 @@ class DatasetConfig:
 
             # Update file_path to point to the CSV file in the same folder
             config['file_path'] = os.path.join("data", dataset_name, f"{dataset_name}.csv")
-
+            print(config)
             return config
 
         except Exception as e:
