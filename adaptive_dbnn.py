@@ -2930,7 +2930,7 @@ class GPUDBNN:
 
     def train(self, X_train: torch.Tensor, y_train: torch.Tensor, X_test: torch.Tensor, y_test: torch.Tensor, batch_size: int = 32):
         """
-        Training loop with separate progress bars for training and testing.
+        Training loop with testing every 5 epochs to save computation time.
         """
         # Ensure the output directory exists
         os.makedirs(self.training_save_path, exist_ok=True)
@@ -3010,8 +3010,12 @@ class GPUDBNN:
         # Create a tqdm progress bar for epochs
         epoch_bar = tqdm(range(self.max_epochs), desc="Epochs", unit="epoch")
 
+        # Track the last epoch where testing was performed
+        last_test_epoch = -1
+
         for epoch in epoch_bar:
-            Trstart_time = time.time()
+            # Track training time
+            train_start_time = time.time()
             failed_cases = []
             n_errors = 0
 
@@ -3048,7 +3052,7 @@ class GPUDBNN:
                 train_error_rate = n_errors / (i + current_batch_size)
                 batch_bar.set_postfix({
                     "Error Rate": f"{train_error_rate:.4f}",
-                    "Time": f"{time.time() - Trstart_time:.2f}s"
+                    "Train Time": f"{time.time() - train_start_time:.2f}s"
                 })
 
             # Close the batch progress bar
@@ -3058,55 +3062,61 @@ class GPUDBNN:
             train_error_rate = n_errors / n_samples
             error_rates.append(train_error_rate)
 
-            # Calculate test accuracy on all remaining test data
-            if hasattr(self, 'test_indices') and self.test_indices:
-                full_test_data = self.X_tensor[self.test_indices]  # Use class attribute
-                full_test_labels = self.y_tensor[self.test_indices]  # Use class attribute
-                test_predictions = self.predict(full_test_data, batch_size=batch_size)
-                test_accuracy = (test_predictions == full_test_labels.cpu()).float().mean()
-            else:
-                test_predictions = self.predict(X_test, batch_size=batch_size)
-                test_accuracy = (test_predictions == y_test.cpu()).float().mean()
-            Trend_time = time.time()
-            training_time = Trend_time - Trstart_time
+            # Perform testing every 5 epochs
+            if (epoch + 1) % 5 == 0 or epoch == self.max_epochs - 1:
+                # Track testing time
+                test_start_time = time.time()
 
-            # Update epoch progress bar with current metrics
-            epoch_bar.set_postfix({
-                "Train Error": f"{train_error_rate:.4f}",
-                "Test Accuracy": f"{test_accuracy:.4f}",
-                "Time": f"{training_time:.2f}s"
-            })
-
-            # Log the epoch metrics
-            train_sample_size = n_samples
-            test_size = len(X_test)
-            self.log_training_epoch(epoch, train_sample_size, training_time, 1 - train_error_rate, test_size, 0, test_accuracy, log_file_path)
-
-            # Update previous values for next iteration
-            prev_train_error = train_error_rate
-            prev_test_accuracy = test_accuracy
-
-            # Check for convergence on test data
-            if test_accuracy == 1.0 or train_error_rate == 0:
-                print(f"Moving on to Epoch: {epoch + 1}")
-                break
-
-            if train_error_rate <= self.best_error:
-                improvement = self.best_error - train_error_rate
-                self.best_error = train_error_rate
-                self.best_W = self.current_W.clone()
-                self._save_best_weights()
-                if improvement <= 0.001:
-                    patience_counter += 1
+                # Calculate test accuracy on all remaining test data
+                if hasattr(self, 'test_indices') and self.test_indices:
+                    full_test_data = self.X_tensor[self.test_indices]  # Use class attribute
+                    full_test_labels = self.y_tensor[self.test_indices]  # Use class attribute
+                    test_predictions = self.predict(full_test_data, batch_size=batch_size)
+                    test_accuracy = (test_predictions == full_test_labels.cpu()).float().mean()
                 else:
-                    patience_counter = 0
-                    self.learning_rate = self.config['training_params']['learning_rate']
-            else:
-                patience_counter += 1
+                    test_predictions = self.predict(X_test, batch_size=batch_size)
+                    test_accuracy = (test_predictions == y_test.cpu()).float().mean()
 
-            if patience_counter >= self.patience:
-                print(f"No significant improvement for {self.patience} epochs. Early stopping.")
-                break
+                test_time = time.time() - test_start_time
+
+                # Update epoch progress bar with current metrics
+                epoch_bar.set_postfix({
+                    "Train Error": f"{train_error_rate:.4f}",
+                    "Test Accuracy": f"{test_accuracy:.4f}",
+                    "Train Time": f"{time.time() - train_start_time:.2f}s",
+                    "Test Time": f"{test_time:.2f}s"
+                })
+
+                # Log the epoch metrics
+                train_sample_size = n_samples
+                test_size = len(X_test)
+                self.log_training_epoch(epoch, train_sample_size, time.time() - train_start_time, 1 - train_error_rate, test_size, test_time, test_accuracy, log_file_path)
+
+                # Update previous values for next iteration
+                prev_train_error = train_error_rate
+                prev_test_accuracy = test_accuracy
+
+                # Check for convergence on test data
+                if test_accuracy == 1.0 or train_error_rate == 0:
+                    print(f"Moving on to Epoch: {epoch + 1}")
+                    break
+
+                if train_error_rate <= self.best_error:
+                    improvement = self.best_error - train_error_rate
+                    self.best_error = train_error_rate
+                    self.best_W = self.current_W.clone()
+                    self._save_best_weights()
+                    if improvement <= 0.001:
+                        patience_counter += 1
+                    else:
+                        patience_counter = 0
+                        self.learning_rate = self.config['training_params']['learning_rate']
+                else:
+                    patience_counter += 1
+
+                if patience_counter >= self.patience:
+                    print(f"No significant improvement for {self.patience} epochs. Early stopping.")
+                    break
 
             if failed_cases:
                 self._update_priors_parallel(failed_cases, batch_size)
