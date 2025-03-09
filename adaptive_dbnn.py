@@ -1631,35 +1631,13 @@ class GPUDBNN:
             # Write the epoch data
             writer.writerow([epoch, train_sample_size, train_time, train_accuracy, test_size, testing_time, test_accuracy])
 
-    def plot_prediction_probabilities(self, X_test: torch.Tensor, predictions: torch.Tensor, y_test: torch.Tensor):
-        """
-        Plot a histogram of prediction probabilities, colored by class.
-        """
-        # Compute posteriors for the test set
-        posteriors, _ = self._compute_batch_posterior(X_test)
-
-        # Get the predicted probabilities for the true classes
-        true_probs = posteriors[torch.arange(len(y_test)), y_test].cpu().numpy()
-
-        # Plot histogram
-        plt.figure(figsize=(10, 6))
-        for class_idx in range(len(self.label_encoder.classes_)):
-            class_mask = (y_test.cpu().numpy() == class_idx)
-            plt.hist(true_probs[class_mask], bins=50, alpha=0.5, label=self.label_encoder.classes_[class_idx])
-
-        plt.title("Prediction Probabilities for True Classes")
-        plt.xlabel("Probability")
-        plt.ylabel("Count")
-        plt.legend()
-        plt.grid(True)
-        plt.show()
-
     def adaptive_fit_predict(self, max_rounds: int = 10,
                             improvement_threshold: float = 0.001,
                             load_epoch: int = None,
                             batch_size: int = 32):
         """
-        Modified adaptive training strategy with detailed test set evaluation after each round.
+        Modified adaptive training strategy that monitors overall improvement across rounds.
+        Stops if adding new samples doesn't improve accuracy after several rounds.
         """
         DEBUG.log(" Starting adaptive_fit_predict")
         if not EnableAdaptive:
@@ -1669,13 +1647,17 @@ class GPUDBNN:
         self.in_adaptive_fit = True
         train_indices = []
         test_indices = None
-        config = self.config
-
+        config=self.config
         try:
             # Get initial data
-            X = self.data.drop(columns=[self.target_column])
+            #X = self.data.drop(columns=[self.target_column])
+            column_names = config['column_names']
+            X = self.data[column_names]
+            X = X.drop(columns=[self.target_column])
             y = self.data[self.target_column]
-
+            DEBUG.log(f"Initial data shape: X={X.shape}, y={len(y)}")
+            y = self.data[self.target_column]
+            DEBUG.log(f" Initial data shape: X={X.shape}, y={len(y)}")
             # Initialize label encoder if not already done
             if not hasattr(self.label_encoder, 'classes_'):
                 self.label_encoder.fit(y)
@@ -1693,10 +1675,137 @@ class GPUDBNN:
                 self.train_indices = []
             if not hasattr(self, 'test_indices'):
                 self.test_indices = list(range(len(X)))
+            try:
+                # Process initial results
+                results = self.fit_predict(batch_size=batch_size)
 
-            # Initialize training and test sets
-            train_indices = self.train_indices
-            test_indices = self.test_indices
+                # Calculate accuracy
+                accuracy = 1.0 - results.get('error_rate', 0.0)
+
+                # Handle perfect accuracy
+                if accuracy >= 0.9999:  # Using 0.9999 to account for floating point precision
+                    logger.info("\n" + "="*50)
+                    logger.info("Perfect Accuracy Achieved!")
+                    logger.info("Training Summary:")
+                    logger.info(f"Total Samples: {len(X)}")
+                    logger.info(f"Final Accuracy: {accuracy:.4%}")
+
+                    # Print class distribution
+                    unique_classes = np.unique(y)
+                    logger.info("\nClass Distribution:")
+                    for class_label in unique_classes:
+                        class_count = np.sum(y == class_label)
+                        logger.info(f"Class {class_label}: {class_count} samples")
+
+                    logger.info("\nNo further training needed - model achieved perfect accuracy.")
+                    logger.info("="*50)
+
+                    return {
+                        'train_indices': self.train_indices,
+                        'test_indices': self.test_indices,
+                        'final_accuracy': accuracy,
+                        'error_rate': 0.0,
+                        'status': 'perfect_accuracy'
+                    }
+            except:
+                pass
+            unique_classes = np.unique(y_encoded)
+
+            # Print class distribution
+            for class_label in unique_classes:
+                class_count = np.sum(y_encoded == class_label)
+                print(f"Class {class_label}: {class_count} samples")
+
+            # Handle model state based on flags
+            if self.use_previous_model:
+                print("Loading previous model state")
+                if self._load_model_components():
+                    self._load_best_weights()
+                    self._load_categorical_encoders()
+                    if self.fresh_start:
+                        print("Fresh start with existing model - all data will start in test set")
+                        train_indices = []
+                        test_indices = list(range(len(X)))
+                    else:
+                        # Load previous split
+                        prev_train, prev_test = self.load_last_known_split()
+                        if prev_train is not None:
+                            train_indices = prev_train
+                            test_indices = prev_test
+                else:
+                    print("No previous model found - starting fresh")
+                    self._clean_existing_model()
+                    train_indices = []
+                    test_indices = list(range(len(X)))
+            else:
+                if self.fresh_start:
+                    print("Starting with fresh model")
+                    self._clean_existing_model()
+                    train_indices = []
+                    test_indices = list(range(len(X)))
+
+            # Initialize test indices if still None
+            if test_indices is None:
+                test_indices = list(range(len(X)))
+
+            # Initialize likelihood parameters if needed
+            if self.likelihood_params is None:
+                DEBUG.log(" Initializing likelihood parameters")
+                if modelType == "Histogram":
+                    self.likelihood_params = self._compute_pairwise_likelihood_parallel(
+                        self.X_tensor, self.y_tensor, self.X_tensor.shape[1]
+                    )
+                elif modelType == "Gaussian":
+                    self.likelihood_params = self._compute_pairwise_likelihood_parallel_std(
+                        self.X_tensor, self.y_tensor, self.X_tensor.shape[1]
+                    )
+                DEBUG.log(" Likelihood parameters computed")
+
+            # Initialize weights if needed
+            if self.weight_updater is None:
+                DEBUG.log(" Initializing weight updater")
+                self._initialize_bin_weights()
+                DEBUG.log(" Weight updater initialized")
+
+            # Initialize model weights if needed
+            if self.current_W is None:
+                DEBUG.log(" Initializing model weights")
+                n_classes = len(unique_classes)
+                n_pairs = len(self.feature_pairs) if self.feature_pairs is not None else 0
+                if n_pairs == 0:
+                    raise ValueError("Feature pairs not initialized")
+                self.current_W = torch.full(
+                    (n_classes, n_pairs),
+                    0.1,
+                    device=self.device,
+                    dtype=torch.float32
+                )
+                if self.best_W is None:
+                    self.best_W = self.current_W.clone()
+
+            # Initialize training set if empty
+            if len(train_indices) == 0:
+                # Select minimum samples from each class for initial training
+                for class_label in unique_classes:
+                    class_indices = np.where(y_encoded == class_label)[0]
+                    if len(class_indices) < 2:
+                        selected_indices = class_indices  # Take all available if less than 2
+                    else:
+                        selected_indices = class_indices[:2]  # Take 2 samples from each class
+                    train_indices.extend(selected_indices)
+
+                # Update test indices
+                test_indices = list(set(range(len(X))) - set(train_indices))
+
+            DEBUG.log(f" Initial training set size: {len(train_indices)}")
+            DEBUG.log(f" Initial test set size: {len(test_indices)}")
+
+            # Initialize adaptive learning patience tracking
+            adaptive_patience = 5  # Number of rounds to wait for improvement
+            adaptive_patience_counter = 0
+            best_overall_accuracy = 0
+            best_train_accuracy = 0
+            best_test_accuracy = 0
 
             # Training loop
             for round_num in range(max_rounds):
@@ -1707,34 +1816,87 @@ class GPUDBNN:
                 # Save indices for this epoch
                 self.save_epoch_data(round_num, train_indices, test_indices)
 
+                # Create feature tensors for training
+                X_train = self.X_tensor[train_indices]
+                y_train = self.y_tensor[train_indices]
+
                 # Train the model
+                save_path = f"round_{round_num}_predictions.csv"
                 self.train_indices = train_indices
                 self.test_indices = test_indices
-                results = self.fit_predict(batch_size=batch_size)
+                results = self.fit_predict(batch_size=batch_size, save_path=save_path)
 
-                # Evaluate the test set at the end of the round
+                # Check training accuracy
+                train_predictions = self.predict(X_train, batch_size=batch_size)
+                train_accuracy = (train_predictions == y_train.cpu()).float().mean()
+                print(f"Training accuracy: {train_accuracy:.4f}")
+
+                # Get test accuracy from results
+                test_accuracy = results['test_accuracy']
+
+                # Check if we're improving overall
+                improved = False
+                if train_accuracy > best_train_accuracy + improvement_threshold:
+                    best_train_accuracy = train_accuracy
+                    improved = True
+                    print(f"Improved training accuracy to {train_accuracy:.4f}")
+
+                if test_accuracy > best_test_accuracy + improvement_threshold:
+                    best_test_accuracy = test_accuracy
+                    improved = True
+                    print(f"Improved test accuracy to {test_accuracy:.4f}")
+
+                if improved:
+                    adaptive_patience_counter = 0
+                else:
+                    adaptive_patience_counter += 1
+                    print(f"No significant overall improvement. Adaptive patience: {adaptive_patience_counter}/{adaptive_patience}")
+                    if adaptive_patience_counter >= adaptive_patience:
+                        print(f"No improvement in accuracy after {adaptive_patience} rounds of adding samples.")
+                        print(f"Best training accuracy achieved: {best_train_accuracy:.4f}")
+                        print(f"Best test accuracy achieved: {best_test_accuracy:.4f}")
+                        print("Stopping adaptive training.")
+                        break
+
+                # Evaluate test data
                 X_test = self.X_tensor[test_indices]
                 y_test = self.y_tensor[test_indices]
                 test_predictions = self.predict(X_test, batch_size=batch_size)
-                test_accuracy = (test_predictions == y_test.cpu()).float().mean()
 
-                # Print test set performance
-                print(f"\n{Colors.BOLD}{Colors.BLUE}Test Set Performance - Round {round_num + 1}{Colors.ENDC}")
-                print(f"Test accuracy: {test_accuracy:.4f}")
+                # Only print test performance header if we didn't just print metrics in fit_predict
+                if not hasattr(self, '_last_metrics_printed') or not self._last_metrics_printed:
+                    print(f"\n{Colors.BLUE}Test Set Performance - Round {round_num + 1}{Colors.ENDC}")
+                    y_test_cpu = y_test.cpu().numpy()
+                    test_predictions_cpu = test_predictions.cpu().numpy()
+                    self.print_colored_confusion_matrix(y_test_cpu, test_predictions_cpu)
 
-                # Print confusion matrix and class-wise metrics
-                y_test_cpu = y_test.cpu().numpy()
-                test_predictions_cpu = test_predictions.cpu().numpy()
-                self.print_colored_confusion_matrix(y_test_cpu, test_predictions_cpu)
+                # Reset the metrics printed flag
+                self._last_metrics_printed = False
 
-                # Select new training samples from misclassified examples
-                new_train_indices = self._select_samples_from_failed_classes(
-                    test_predictions, y_test, test_indices
-                )
+                if train_accuracy == 1.0:
+                    if len(test_indices) == 0:
+                        print("No more test samples available. Training complete.")
+                        break
 
-                if not new_train_indices:
-                    print("No suitable new samples found. Training complete.")
-                    break
+                    # Get new training samples from misclassified examples
+                    new_train_indices = self._select_samples_from_failed_classes(
+                        test_predictions, y_test, test_indices
+                    )
+
+                    if not new_train_indices:
+                        print("Achieved 100% accuracy on all data. Training complete.")
+                        self.in_adaptive_fit = False
+                        return {'train_indices': [], 'test_indices': []}
+
+                else:
+                    # Training did not achieve 100% accuracy, select new samples
+                    new_train_indices = self._select_samples_from_failed_classes(
+                        test_predictions, y_test, test_indices
+                    )
+
+                    if not new_train_indices:
+                        print("No suitable new samples found. Training complete.")
+                        break
 
                 # Update training and test sets with new samples
                 train_indices.extend(new_train_indices)
@@ -2706,51 +2868,30 @@ class GPUDBNN:
                 pass
 
     def print_colored_confusion_matrix(self, y_true, y_pred, class_labels=None):
-        """
-        Print a color-coded confusion matrix with class-wise accuracy, precision, recall, and F1-score.
-        """
+        """Print a color-coded confusion matrix with class-wise accuracy."""
         if class_labels is None:
             class_labels = self.label_encoder.classes_
 
         # Compute confusion matrix
         cm = confusion_matrix(y_true, y_pred)
 
-        # Calculate class-wise metrics
-        class_metrics = {}
+        # Calculate class-wise accuracy
+        class_accuracy = {}
         for i in range(len(class_labels)):
-            true_positives = cm[i, i]
-            false_positives = cm[:, i].sum() - true_positives
-            false_negatives = cm[i, :].sum() - true_positives
-            true_negatives = cm.sum() - (true_positives + false_positives + false_negatives)
-
-            # Accuracy
-            accuracy = (true_positives + true_negatives) / cm.sum() if cm.sum() > 0 else 0.0
-
-            # Precision
-            precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0.0
-
-            # Recall
-            recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0.0
-
-            # F1-score
-            f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
-
-            class_metrics[i] = {
-                'accuracy': accuracy,
-                'precision': precision,
-                'recall': recall,
-                'f1_score': f1_score
-            }
+            if cm[i].sum() > 0:  # Avoid division by zero
+                class_accuracy[i] = cm[i, i] / cm[i].sum()
+            else:
+                class_accuracy[i] = 0.0
 
         # Print header
-        print(f"\n{Colors.BOLD}{Colors.BLUE}Confusion Matrix and Class-wise Metrics:{Colors.ENDC}")
+        print(f"\n{Colors.BOLD}Confusion Matrix and Class-wise Accuracy:{Colors.ENDC}")
 
         # Print class labels header
         print(f"{'Actual/Predicted':<15}", end='')
         for label in class_labels:
             print(f"{str(label):<8}", end='')
-        print("Accuracy  Precision  Recall  F1-Score")
-        print("-" * (15 + 8 * len(class_labels) + 35))
+        print("Accuracy")
+        print("-" * (15 + 8 * len(class_labels) + 10))
 
         # Print matrix with colors
         for i in range(len(class_labels)):
@@ -2767,23 +2908,21 @@ class GPUDBNN:
                     color = Colors.RED
                 print(f"{color}{cm[i, j]:<8}{Colors.ENDC}", end='')
 
-            # Print class metrics with color based on performance
-            metrics = class_metrics[i]
-            accuracy_color = Colors.GREEN if metrics['accuracy'] >= 0.9 else Colors.YELLOW if metrics['accuracy'] >= 0.7 else Colors.RED
-            precision_color = Colors.GREEN if metrics['precision'] >= 0.9 else Colors.YELLOW if metrics['precision'] >= 0.7 else Colors.RED
-            recall_color = Colors.GREEN if metrics['recall'] >= 0.9 else Colors.YELLOW if metrics['recall'] >= 0.7 else Colors.RED
-            f1_color = Colors.GREEN if metrics['f1_score'] >= 0.9 else Colors.YELLOW if metrics['f1_score'] >= 0.7 else Colors.RED
-
-            print(f"{accuracy_color}{metrics['accuracy']:>7.2%}{Colors.ENDC}  "
-                  f"{precision_color}{metrics['precision']:>8.2f}{Colors.ENDC}  "
-                  f"{recall_color}{metrics['recall']:>6.2f}{Colors.ENDC}  "
-                  f"{f1_color}{metrics['f1_score']:>7.2f}{Colors.ENDC}")
+            # Print class accuracy with color based on performance
+            acc = class_accuracy[i]
+            if acc >= 0.9:
+                color = Colors.GREEN
+            elif acc >= 0.7:
+                color = Colors.YELLOW
+            else:
+                color = Colors.RED
+            print(f"{color}{acc:>7.2%}{Colors.ENDC}")
 
         # Print overall accuracy
         total_correct = np.diag(cm).sum()
         total_samples = cm.sum()
         overall_acc = total_correct / total_samples
-        print("-" * (15 + 8 * len(class_labels) + 35))
+        print("-" * (15 + 8 * len(class_labels) + 10))
         color = Colors.GREEN if overall_acc >= 0.9 else Colors.YELLOW if overall_acc >= 0.7 else Colors.RED
         print(f"{Colors.BOLD}Overall Accuracy: {color}{overall_acc:.2%}{Colors.ENDC}")
 
@@ -2826,11 +2965,11 @@ class GPUDBNN:
             previous_best_error = self.best_error
 
         # Pre-compute likelihood parameters
-        if self.config['modelType'] == "Histogram":
+        if self.config['training_params']['modelType'] == "Histogram":
             self.likelihood_params = self._compute_pairwise_likelihood_parallel(
                 X_train, y_train, X_train.shape[1]
             )
-        elif self.config['modelType'] == "Gaussian":
+        elif self.config['training_params']['modelType'] == "Gaussian":
             self.likelihood_params = self._compute_pairwise_likelihood_parallel_std(
                 X_train, y_train, X_train.shape[1]
             )
@@ -2852,11 +2991,15 @@ class GPUDBNN:
         n_samples = len(X_train)
         error_rates = []
         train_losses = []
+        test_losses = []
+        train_accuracies = []
+        test_accuracies = []
         stop_training = False
         patience_counter = 0
 
         # Initialize previous values for color comparison
         prev_train_error = float('inf')
+        prev_test_accuracy = 0.0
 
         # Pre-allocate tensors for batch processing
         predictions = torch.empty(batch_size, dtype=torch.long, device=self.device)
@@ -2876,9 +3019,9 @@ class GPUDBNN:
                 batch_y = y_train[i:batch_end]
 
                 # Compute posteriors for batch
-                if self.config['modelType'] == "Histogram":
+                if self.config['training_params']['modelType'] == "Histogram":
                     posteriors, bin_indices = self._compute_batch_posterior(batch_X)
-                elif self.config['modelType'] == "Gaussian":
+                elif self.config['training_params']['modelType'] == "Gaussian":
                     posteriors, comp_resp = self._compute_batch_posterior_std(batch_X)
 
                 predictions[:current_batch_size] = torch.argmax(posteriors, dim=1)
@@ -2899,15 +3042,33 @@ class GPUDBNN:
             train_error_rate = n_errors / n_samples
             error_rates.append(train_error_rate)
 
+            # Calculate test accuracy on all remaining test data
+            if hasattr(self, 'test_indices') and self.test_indices:
+                full_test_data = self.X_tensor[self.test_indices]  # Use class attribute
+                full_test_labels = self.y_tensor[self.test_indices]  # Use class attribute
+                test_predictions = self.predict(full_test_data, batch_size=batch_size)
+                test_accuracy = (test_predictions == full_test_labels.cpu()).float().mean()
+            else:
+                test_predictions = self.predict(X_test, batch_size=batch_size)
+                test_accuracy = (test_predictions == y_test.cpu()).float().mean()
+            Trend_time = time.time()
+            training_time = Trend_time - Trstart_time
+
+            print(f"Training time for epoch {epoch + 1} is: {training_time:.2f} seconds")
+            print(f"Epoch {epoch + 1}: Train error rate = {train_error_rate:.4f}, "
+                  f"Test accuracy = {test_accuracy:.4f}")
+
             # Log the epoch metrics
             train_sample_size = n_samples
-            self.log_training_epoch(epoch, train_sample_size, time.time() - Trstart_time, 1 - train_error_rate, 0, 0, 0, log_file_path)
+            test_size = len(X_test)
+            self.log_training_epoch(epoch, train_sample_size, training_time, 1 - train_error_rate, test_size, 0, test_accuracy, log_file_path)
 
             # Update previous values for next iteration
             prev_train_error = train_error_rate
+            prev_test_accuracy = test_accuracy
 
-            # Check for convergence on training data
-            if train_error_rate == 0:
+            # Check for convergence on test data
+            if test_accuracy == 1.0 or train_error_rate == 0:
                 print(f"Moving on to Epoch: {epoch + 1}")
                 break
 
@@ -2930,6 +3091,19 @@ class GPUDBNN:
 
             if failed_cases:
                 self._update_priors_parallel(failed_cases, batch_size)
+
+            # Calculate and store metrics
+            train_loss = n_errors / n_samples
+            train_pred = self.predict(X_train, batch_size)
+            train_acc = (train_pred == y_train.cpu()).float().mean()
+
+            test_loss = (test_predictions != y_test.cpu()).float().mean()
+
+            # Store metrics
+            train_losses.append(train_loss)
+            test_losses.append(test_loss)
+            train_accuracies.append(train_acc)
+            test_accuracies.append(test_accuracy)
 
         self._save_model_components()
         return self.current_W.cpu(), error_rates
