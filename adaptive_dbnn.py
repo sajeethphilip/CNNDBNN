@@ -502,21 +502,23 @@ class BinWeightUpdater:
         self.n_classes = n_classes
         self.feature_pairs = feature_pairs
         self.n_bins_per_dim = n_bins_per_dim
-        self.device=Train_device
-        # Initialize histogram_weights as empty dictionary first
+        self.device = Train_device
+
+        # Initialize histogram_weights as empty dictionary
         self.histogram_weights = {}
 
-        # Create weights for each class and feature pair
+        # Create weights for each class and feature group
         for class_id in range(n_classes):
             self.histogram_weights[class_id] = {}
-            for pair_idx in range(len(feature_pairs)):
+            for group_idx in range(len(feature_pairs)):
                 # Initialize with default weight of 0.1
-                #print(f"[DEBUG] Creating weights for class {class_id}, pair {pair_idx}")
-                self.histogram_weights[class_id][pair_idx] = torch.full(
-                    (n_bins_per_dim, n_bins_per_dim),
+                group_size = len(feature_pairs[group_idx])
+                weight_shape = [self.n_bins_per_dim] * group_size
+                self.histogram_weights[class_id][group_idx] = torch.full(
+                    weight_shape,
                     0.1,
                     dtype=torch.float32,
-                    device=self.device  # Ensure weights are created on correct device
+                    device=self.device
                 ).contiguous()
 
         # Initialize weights for each class and feature pair
@@ -1152,31 +1154,29 @@ class GPUDBNN:
         n_classes = len(self.likelihood_params['classes'])
         log_likelihoods = torch.zeros((batch_size, n_classes), device=self.device)
 
-        for group_idx, feature_pair in enumerate(self.likelihood_params['feature_pairs']):
+        for group_idx, feature_group in enumerate(self.likelihood_params['feature_pairs']):
             bin_edges = self.likelihood_params['bin_edges'][group_idx]
             bin_probs = self.likelihood_params['bin_probs'][group_idx]
 
-            # Get bin indices for the current feature pair
+            # Compute bin indices for each feature in the group
             bin_indices = torch.stack([
-                torch.bucketize(features[:, feature_pair[0]], bin_edges[0]) - 1,
-                torch.bucketize(features[:, feature_pair[1]], bin_edges[1]) - 1
+                torch.bucketize(features[:, feature_idx], bin_edges[dim]) - 1
+                for dim, feature_idx in enumerate(feature_group)
             ]).clamp_(0, self.n_bins_per_dim - 1)
 
             # Iterate over all classes to compute log-likelihoods
             for class_idx in range(n_classes):
-                # Get bin-specific weights for this class and feature pair
+                # Get bin-specific weights for this class and feature group
                 bin_weights = self.weight_updater.get_histogram_weights(
                     class_idx,  # Use the current class index
                     group_idx
                 )
 
                 # Apply bin-specific weights to probabilities
-                weighted_probs = bin_probs[class_idx][bin_indices[0], bin_indices[1]] * bin_weights[bin_indices[0], bin_indices[1]]
+                weighted_probs = bin_probs[class_idx][tuple(bin_indices)] * bin_weights[tuple(bin_indices)]
 
-                # Compute log-likelihood for this feature pair and class
+                # Compute log-likelihood for this feature group and class
                 group_log_likelihoods = torch.log(weighted_probs + epsilon)
-
-                # Accumulate log-likelihoods for this class
                 log_likelihoods[:, class_idx] += group_log_likelihoods
 
         # Normalize posteriors using softmax
@@ -2480,23 +2480,25 @@ class GPUDBNN:
         adjustments = self.learning_rate * (1.0 - (true_posteriors / pred_posteriors))
 
         # Batch updates for all feature groups and classes
-        for group_idx in bin_indices:
-            bin_i, bin_j = bin_indices[group_idx]
+        for group_idx in range(len(self.feature_pairs)):
+            # Get bin indices for the current feature group
+            if bin_indices is not None:
+                # Get the bin indices for this group
+                group_bin_indices = bin_indices[group_idx]
 
-            # Group updates by class for vectorization
-            for class_id in range(self.weight_updater.n_classes):
-                class_mask = true_classes == class_id
-                if not class_mask.any():
-                    continue
+                # Group updates by class for vectorization
+                for class_id in range(self.weight_updater.n_classes):
+                    class_mask = true_classes == class_id
+                    if not class_mask.any():
+                        continue
 
-                # Get relevant indices and adjustments for this class
-                class_bin_i = bin_i[class_mask]
-                class_bin_j = bin_j[class_mask]
-                class_adjustments = adjustments[class_mask]
+                    # Get relevant indices and adjustments for this class
+                    class_bin_indices = group_bin_indices[:, class_mask]
+                    class_adjustments = adjustments[class_mask]
 
-                # Update weights for this class using advanced indexing
-                weights = self.weight_updater.histogram_weights[class_id][group_idx]
-                weights[class_bin_i, class_bin_j] += class_adjustments
+                    # Update weights for this class using advanced indexing
+                    weights = self.weight_updater.histogram_weights[class_id][group_idx]
+                    weights[tuple(class_bin_indices)] += class_adjustments
 
     def _update_priors_parallel_old(self, failed_cases: List[Tuple], batch_size: int = 32):
         """Vectorized weight updates with proper error handling"""
