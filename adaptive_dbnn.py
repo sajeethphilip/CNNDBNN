@@ -187,7 +187,7 @@ class DatasetConfig:
         )
 
         # Save the configuration
-        config_path = f"{dataset_name}.conf"
+        config_path = f"data/{dataset_name}/{dataset_name}.conf"
         try:
             with open(config_path, 'w') as f:
                 json.dump(config, f, indent=4)
@@ -202,7 +202,7 @@ class DatasetConfig:
     @staticmethod
     def format_config_file(dataset_name: str) -> bool:
         """Format and validate configuration file"""
-        config_path = f"{dataset_name}.conf"
+        config_path = f"data/{dataset_name}/{dataset_name}.conf"
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
                 config_text = f.read()
@@ -223,7 +223,7 @@ class DatasetConfig:
     @staticmethod
     def load_config_old(dataset_name: str) -> Dict:
         """Enhanced configuration loading with URL handling"""
-        config_path = f"{dataset_name}.conf"
+        config_path =f"data/{dataset_name}/{dataset_name}.conf"
         try:
             # Check if configuration file exists
             if not os.path.exists(config_path):
