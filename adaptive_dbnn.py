@@ -4214,11 +4214,11 @@ if __name__ == "__main__":
 
     # Debug: Print dataset generation status
     DEBUG.log(f"Test datasets generated: {Gen_Samples}")
-
+    print("Here")
     # Test datasets
     datasets_to_test = DatasetConfig.get_available_datasets(create_configs=False)
     DEBUG.log(f"Datasets to test: {datasets_to_test}")
-
+    print(datasets_to_test)
     for dataset in datasets_to_test:
         if any(suffix in dataset for suffix in [
             '_last_testing', '_Last_testing',
