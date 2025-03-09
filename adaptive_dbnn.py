@@ -1150,28 +1150,32 @@ class GPUDBNN:
         n_classes = len(self.likelihood_params['classes'])
         log_likelihoods = torch.zeros((batch_size, n_classes), device=self.device)
 
+        # Get feature group size from config
+        feature_group_size = self.config.get('likelihood_config', {}).get('feature_group_size', 2)
+
         # Vectorized computation for all feature groups
         for group_idx, feature_group in enumerate(self.likelihood_params['feature_pairs']):
             bin_edges = self.likelihood_params['bin_edges'][group_idx]
-            bin_probs = self.likelihood_params['bin_probs'][group_idx]
+            bin_probs = self.likelihood_params['bin_probs'][group_idx]  # Shape: [n_classes, n_bins, ..., n_bins]
 
-            # Get feature pair data for the entire batch
-            pair_data = features[:, feature_group]
+            # Get feature group data for the entire batch
+            group_data = features[:, feature_group]  # Shape: [batch_size, feature_group_size]
 
-            # Vectorized binning
+            # Vectorized binning for all dimensions in the feature group
             bin_indices = torch.stack([
-                torch.bucketize(pair_data[:, dim], bin_edges[dim]) - 1
-                for dim in range(2)
-            ]).clamp_(0, bin_probs.shape[1] - 1)
+                torch.bucketize(group_data[:, dim], bin_edges[dim]) - 1
+                for dim in range(feature_group_size)
+            ]).clamp_(0, bin_probs.shape[1] - 1)  # Shape: [feature_group_size, batch_size]
 
             # Get bin-specific weights for all classes
             bin_weights = torch.stack([
                 self.weight_updater.get_histogram_weights(class_idx, group_idx)
                 for class_idx in range(n_classes)
-            ])
+            ])  # Shape: [n_classes, n_bins, ..., n_bins]
 
             # Gather probabilities and weights using advanced indexing
-            weighted_probs = bin_probs * bin_weights[:, bin_indices[0], bin_indices[1]]
+            # Use dynamic indexing for feature groups of any size
+            weighted_probs = bin_probs[:, bin_indices[0], bin_indices[1], ...] * bin_weights[:, bin_indices[0], bin_indices[1], ...]
 
             # Sum log-likelihoods across feature groups
             log_likelihoods += torch.log(weighted_probs + epsilon)
@@ -2098,7 +2102,7 @@ class GPUDBNN:
         return torch.FloatTensor(X_scaled)
 
     def _generate_feature_combinations(self, n_features: int, group_size: int, max_combinations: int = None) -> torch.Tensor:
-        """Generate and save/load consistent feature combinations"""
+        """Generate and save/load consistent feature combinations."""
         # Create path for storing feature combinations
         dataset_folder = os.path.splitext(os.path.basename(self.dataset_name))[0]
         base_path = self.config.get('training_params', {}).get('training_save_path', 'training_data')
@@ -2121,8 +2125,7 @@ class GPUDBNN:
 
         # Sample combinations if max_combinations specified
         if max_combinations and len(all_combinations) > max_combinations:
-            # Use fixed seed for consistent sampling
-            rng = np.random.RandomState(42)
+            rng = np.random.RandomState(42)  # Fixed seed for reproducibility
             all_combinations = rng.choice(all_combinations, max_combinations, replace=False)
 
         # Convert to tensor
@@ -2145,10 +2148,13 @@ class GPUDBNN:
         # Get bin sizes from config
         bin_sizes = self.config.get('likelihood_config', {}).get('bin_sizes', [20])
 
+        # Get feature group size from config
+        feature_group_size = self.config.get('likelihood_config', {}).get('feature_group_size', 2)
+
         # Generate feature combinations
         self.feature_pairs = self._generate_feature_combinations(
             feature_dims,
-            self.config.get('likelihood_config', {}).get('feature_group_size', 2),
+            feature_group_size,
             self.config.get('likelihood_config', {}).get('max_combinations', None)
         )
 
@@ -2175,18 +2181,18 @@ class GPUDBNN:
                 if class_mask.any():
                     class_data = group_data[class_mask]
 
-                    # Compute bin indices
+                    # Compute bin indices for all dimensions in the feature group
                     bin_indices = torch.stack([
                         torch.bucketize(class_data[:, dim], bin_edges[dim]) - 1
-                        for dim in range(len(feature_group))
-                    ]).clamp_(0, bin_shape[1] - 1)
+                        for dim in range(feature_group_size)
+                    ]).clamp_(0, bin_shape[1] - 1)  # Shape: [feature_group_size, batch_size]
 
                     # Update bin counts using advanced indexing
-                    bin_counts[class_idx, bin_indices[0], bin_indices[1]] += 1
+                    bin_counts[class_idx, bin_indices[0], bin_indices[1], ...] += 1
 
             # Apply Laplace smoothing and compute probabilities
             smoothed_counts = bin_counts + 1.0
-            bin_probs = smoothed_counts / smoothed_counts.sum(dim=tuple(range(1, len(feature_group) + 1)), keepdim=True)
+            bin_probs = smoothed_counts / smoothed_counts.sum(dim=tuple(range(1, feature_group_size + 1)), keepdim=True)
 
             # Store results
             all_bin_edges.append(bin_edges)
@@ -2200,7 +2206,6 @@ class GPUDBNN:
             'feature_pairs': self.feature_pairs,
             'classes': unique_classes
         }
-
 
     def _compute_pairwise_likelihood_parallel_old(self, dataset: torch.Tensor, labels: torch.Tensor, feature_dims: int):
         """Optimized non-parametric likelihood computation with configurable bin sizes"""
@@ -2577,17 +2582,7 @@ class GPUDBNN:
         self.current_W.clamp_(min=1e-10)
 
     def _compute_custom_bin_edges(self, data: torch.Tensor, bin_sizes: List[int]) -> List[torch.Tensor]:
-        """
-        Compute bin edges based on custom bin sizes.
-        Supports both uniform and non-uniform binning.
-
-        Args:
-            data: Input tensor of shape [n_samples, n_features]
-            bin_sizes: List of integers specifying bin sizes for each dimension
-
-        Returns:
-            List of tensors containing bin edges for each dimension
-        """
+        """Compute bin edges based on custom bin sizes."""
         n_dims = data.shape[1]
         bin_edges = []
 
@@ -2599,15 +2594,13 @@ class GPUDBNN:
         if len(bin_sizes) < n_dims:
             raise ValueError(f"Not enough bin sizes provided. Need {n_dims}, got {len(bin_sizes)}")
 
+        # Compute bin edges for each dimension
         for dim in range(n_dims):
             dim_data = data[:, dim]
             dim_min, dim_max = dim_data.min(), dim_data.max()
-            padding = (dim_max - dim_min) * 0.01
+            padding = (dim_max - dim_min) * 0.01  # Add 1% padding
 
             # Create edges based on specified bin size
-            if bin_sizes[dim] <= 1:
-                raise ValueError(f"Bin size must be > 1, got {bin_sizes[dim]}")
-
             edges = torch.linspace(
                 dim_min - padding,
                 dim_max + padding,
