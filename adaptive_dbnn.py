@@ -221,7 +221,7 @@ class DatasetConfig:
             return False
 
     @staticmethod
-    def load_config(dataset_name: str) -> Dict:
+    def load_config_old(dataset_name: str) -> Dict:
         """Enhanced configuration loading with URL handling"""
         config_path = f"{dataset_name}.conf"
         try:
@@ -342,44 +342,51 @@ class DatasetConfig:
 
 
 
-    @staticmethod
+     @staticmethod
     def get_available_datasets(create_configs: bool = False) -> List[str]:
-        """Get list of available dataset configurations with better filename handling"""
-        # Get all config and CSV files
-        conf_files = {f.split('.')[0] for f in os.listdir()
-                     if f.endswith('.conf') and f != 'adaptive_dbnn.conf'}  # Exclude own config
-        csv_files = {f.split('.')[0] for f in os.listdir()
-                    if f.endswith('.csv')}
+        """Get list of available dataset configurations by scanning the data folder."""
+        data_dir = "data"
+        datasets = []
 
-        # Filter out derived filenames
-        exclude_suffixes = [
-            '_last_testing', '_Last_testing',
-            '_last_training', '_Last_training',
-            '_predictions', '_training_metrics',
-            '_training_metrics_metrics'
-        ]
+        if not os.path.exists(data_dir):
+            os.makedirs(data_dir)
+            return datasets
 
-        # Filter CSV files that don't have config
-        csv_without_conf = csv_files - conf_files
-        csv_without_conf = {name for name in csv_without_conf
-                           if not any(name.endswith(suffix) for suffix in exclude_suffixes)}
+        for dataset_name in os.listdir(data_dir):
+            dataset_path = os.path.join(data_dir, dataset_name)
+            if os.path.isdir(dataset_path):
+                csv_file = os.path.join(dataset_path, f"{dataset_name}.csv")
+                conf_file = os.path.join(dataset_path, "adaptive_dbnn.conf")
+                if os.path.exists(csv_file) and os.path.exists(conf_file):
+                    datasets.append(dataset_name)
 
-        # Start with datasets that have config files
-        datasets = conf_files
+        return sorted(datasets)
 
-        # If requested, ask about creating configs for remaining CSVs
-        if create_configs and csv_without_conf:
-            print("\nFound CSV files without configuration:")
-            for csv_name in sorted(csv_without_conf):
-                response = input(f"Create configuration for {csv_name}.csv? (y/n): ")
-                if response.lower() == 'y':
-                    try:
-                        DatasetConfig.create_default_config(csv_name)
-                        datasets.add(csv_name)
-                    except Exception as e:
-                        print(f"Error creating config for {csv_name}: {str(e)}")
+    @staticmethod
+    def load_config(dataset_name: str) -> Dict:
+        """Load configuration from the data/<dataset_name>/adaptive_dbnn.conf file."""
+        config_path = os.path.join("data", dataset_name, "adaptive_dbnn.conf")
+        try:
+            if not os.path.exists(config_path):
+                print(f"Configuration file {config_path} not found.")
+                print(f"Creating default configuration for {dataset_name}")
+                return DatasetConfig.create_default_config(dataset_name)
 
-        return sorted(list(datasets))
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config_text = f.read()
+
+            clean_config = remove_comments(config_text)
+            config = json.loads(clean_config)
+
+            # Update file_path to point to the CSV file in the same folder
+            config['file_path'] = os.path.join("data", dataset_name, f"{dataset_name}.csv")
+
+            return config
+
+        except Exception as e:
+            print(f"Error handling configuration for {dataset_name}: {str(e)}")
+            traceback.print_exc()
+            return None
 
 
     @staticmethod
@@ -1071,111 +1078,72 @@ class GPUDBNN:
         return features
 
     def _load_dataset(self) -> pd.DataFrame:
-        """Load and preprocess dataset with improved error handling"""
+        """Load and preprocess dataset from the data/<dataset_name>/ folder."""
         DEBUG.log(f" Loading dataset from config: {self.config}")
         try:
-            # Validate configuration
-            if self.config is None:
-                raise ValueError(f"No configuration found for dataset: {self.dataset_name}")
             file_path = self.config.get('file_path')
             if file_path is None:
                 raise ValueError(f"No file path specified in configuration for dataset: {self.dataset_name}")
+
             # Handle URL or local file
-            try:
-                if file_path.startswith(('http://', 'https://')):
-                    DEBUG.log(f" Loading from URL: {file_path}")
-                    response = requests.get(file_path)
-                    response.raise_for_status()
-                    data = StringIO(response.text)
-                else:
-                    DEBUG.log(f" Loading from local file: {file_path}")
-                    if not os.path.exists(file_path):
-                        raise FileNotFoundError(f"Dataset file not found: {file_path}")
-                    data = file_path
+            if file_path.startswith(('http://', 'https://')):
+                DEBUG.log(f" Loading from URL: {file_path}")
+                response = requests.get(file_path)
+                response.raise_for_status()
+                data = StringIO(response.text)
+            else:
+                DEBUG.log(f" Loading from local file: {file_path}")
+                if not os.path.exists(file_path):
+                    raise FileNotFoundError(f"Dataset file not found: {file_path}")
+                data = file_path
 
-                # First, read the CSV to get the actual headers
-                has_header = self.config.get('has_header', True)
+            # Read the CSV file
+            has_header = self.config.get('has_header', True)
+            read_params = {
+                'sep': self.config.get('separator', ','),
+                'header': 0 if has_header else None,
+            }
+            df = pd.read_csv(data, **read_params)
 
-                read_params = {
-                    'sep': self.config.get('separator', ','),
-                    'header': 0 if has_header else None,
-                }
+            if df is None or df.empty:
+                raise ValueError(f"Empty dataset loaded from {file_path}")
 
-                # DO NOT include 'names' parameter for the initial read
-                # This allows us to read the actual headers from the file
-                DEBUG.log(f" Reading CSV with parameters: {read_params}")
-                df = pd.read_csv(data, **read_params)
+            DEBUG.log(f" Loaded DataFrame shape: {df.shape}")
+            DEBUG.log(f" Original DataFrame columns: {df.columns.tolist()}")
 
-                if df is None or df.empty:
-                    raise ValueError(f"Empty dataset loaded from {file_path}")
+            # Filter features based on config after reading the actual data
+            if 'column_names' in self.config:
+                DEBUG.log(" Filtering features based on config")
+                df = _filter_features_from_config(df, self.config)
+                DEBUG.log(f" Shape after filtering: {df.shape}")
 
-                DEBUG.log(f" Loaded DataFrame shape: {df.shape}")
-                DEBUG.log(f" Original DataFrame columns: {df.columns.tolist()}")
+            # Handle target column
+            target_column = self.config.get('target_column')
+            if target_column is None:
+                raise ValueError(f"No target column specified for dataset: {self.dataset_name}")
 
-                # Filter features based on config after reading the actual data
-                if 'column_names' in self.config:
-                    DEBUG.log(" Filtering features based on config")
-                    df = _filter_features_from_config(df, self.config)
-                    DEBUG.log(f" Shape after filtering: {df.shape}")
+            if isinstance(target_column, int):
+                cols = df.columns.tolist()
+                if target_column >= len(cols):
+                    raise ValueError(f"Target column index {target_column} is out of range")
+                target_column = cols[target_column]
+                self.config['target_column'] = target_column
+                DEBUG.log(f" Using target column: {target_column}")
 
-                # Handle target column
-                target_column = self.config.get('target_column')
-                if target_column is None:
-                    raise ValueError(f"No target column specified for dataset: {self.dataset_name}")
+            if target_column not in df.columns:
+                raise ValueError(f"Target column '{target_column}' not found in dataset")
 
-                if isinstance(target_column, int):
-                    cols = df.columns.tolist()
-                    if target_column >= len(cols):
-                        raise ValueError(f"Target column index {target_column} is out of range")
-                    target_column = cols[target_column]
-                    self.config['target_column'] = target_column
-                    DEBUG.log(f" Using target column: {target_column}")
+            DEBUG.log(f" Dataset loaded successfully. Shape: {df.shape}")
+            DEBUG.log(f" Columns: {df.columns.tolist()}")
+            DEBUG.log(f" Data types:\n{df.dtypes}")
 
-                if target_column not in df.columns:
-                    raise ValueError(f"Target column '{target_column}' not found in dataset")
+            return df
 
-                DEBUG.log(f" Dataset loaded successfully. Shape: {df.shape}")
-                DEBUG.log(f" Columns: {df.columns.tolist()}")
-                DEBUG.log(f" Data types:\n{df.dtypes}")
-
-                # Create data directory path
-                dataset_folder = os.path.splitext(os.path.basename(self.dataset_name))[0]
-                base_path = self.config.get('training_params', {}).get('training_save_path', 'training_data')
-                data_dir = os.path.join(base_path, dataset_folder, 'data')
-                shuffled_file = os.path.join(data_dir, 'shuffled_data.csv')
-
-                # Check if this is a fresh start with random shuffling
-                if self.fresh_start and self.random_state == -1:
-                    print("Fresh start with random shuffling enabled")
-                    # Perform 3 rounds of truly random shuffling
-                    for _ in range(3):
-                        df = df.iloc[np.random.permutation(len(df))].reset_index(drop=True)
-                    # Ensure directory exists before saving
-                    os.makedirs(data_dir, exist_ok=True)
-                    # Save shuffled data
-                    df.to_csv(shuffled_file, index=False)
-                    print(f"Saved shuffled data to {shuffled_file}")
-                elif os.path.exists(shuffled_file):
-                    print(f"Loading previously shuffled data from {shuffled_file}")
-                    df = pd.read_csv(shuffled_file)
-                else:
-                    print("Using original data order (no shuffling required)")
-
-                return df
-
-            except requests.exceptions.RequestException as e:
-                DEBUG.log(f" Error downloading dataset from URL: {str(e)}")
-                raise RuntimeError(f"Failed to download dataset from URL: {str(e)}")
-            except pd.errors.EmptyDataError:
-                DEBUG.log(f" Error: Dataset file is empty")
-                raise ValueError(f"Dataset file is empty: {file_path}")
-            except pd.errors.ParserError as e:
-                DEBUG.log(f" Error parsing CSV file: {str(e)}")
-                raise ValueError(f"Invalid CSV format: {str(e)}")
         except Exception as e:
             DEBUG.log(f" Error loading dataset: {str(e)}")
             DEBUG.log(" Stack trace:", traceback.format_exc())
             raise RuntimeError(f"Failed to load dataset: {str(e)}")
+
     def _compute_batch_posterior(self, features: torch.Tensor, epsilon: float = 1e-10):
         """Optimized batch posterior with vectorized operations"""
         # Safety checks
@@ -2571,9 +2539,11 @@ class GPUDBNN:
         }
 
 #---------------------------------------------------------Save Last data -------------------------
-    def save_last_split(self, train_indices: list, test_indices: list):
-        """Save the last training/testing split to CSV files"""
+     def save_last_split(self, train_indices: list, test_indices: list):
+        """Save the last training/testing split to CSV files in the data/<dataset_name>/ folder."""
         dataset_name = self.dataset_name
+        dataset_dir = os.path.join("data", dataset_name)
+        os.makedirs(dataset_dir, exist_ok=True)
 
         # Get full dataset
         X = self.data.drop(columns=[self.target_column])
@@ -2581,18 +2551,20 @@ class GPUDBNN:
 
         # Save training data
         train_data = pd.concat([X.iloc[train_indices], y.iloc[train_indices]], axis=1)
-        train_data.to_csv(f'{dataset_name}_Last_training.csv', index=False)
+        train_data.to_csv(os.path.join(dataset_dir, f'{dataset_name}_Last_training.csv'), index=False)
 
         # Save testing data
         test_data = pd.concat([X.iloc[test_indices], y.iloc[test_indices]], axis=1)
-        test_data.to_csv(f'{dataset_name}_Last_testing.csv', index=False)
-        print(f"Last testing data is saved to {dataset_name}_Last_testing.csv")
-        print(f"Last training data is saved to {dataset_name}_Last_training.csv")
+        test_data.to_csv(os.path.join(dataset_dir, f'{dataset_name}_Last_testing.csv'), index=False)
+        print(f"Last testing data is saved to {os.path.join(dataset_dir, f'{dataset_name}_Last_testing.csv')}")
+        print(f"Last training data is saved to {os.path.join(dataset_dir, f'{dataset_name}_Last_training.csv')}")
+
     def load_last_known_split(self):
-        """Load the last known good training/testing split"""
+        """Load the last known good training/testing split from the data/<dataset_name>/ folder."""
         dataset_name = self.dataset_name
-        train_file = f'{dataset_name}_Last_training.csv'
-        test_file = f'{dataset_name}_Last_testing.csv'
+        dataset_dir = os.path.join("data", dataset_name)
+        train_file = os.path.join(dataset_dir, f'{dataset_name}_Last_training.csv')
+        test_file = os.path.join(dataset_dir, f'{dataset_name}_Last_testing.csv')
 
         if os.path.exists(train_file) and os.path.exists(test_file):
             # Load the saved splits
