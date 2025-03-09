@@ -819,7 +819,7 @@ class GPUDBNN:
         """Initialize GPUDBNN with support for continued training with fresh data"""
 
         # Set dataset_name first
-        self.dataset_name = dataset_name.lower()
+        self.dataset_name = dataset_name
         self.device = Train_device
         self.computation_cache = ComputationCache(self.device)
         # Initialize train/test indices
@@ -904,7 +904,7 @@ class GPUDBNN:
 
         print(f"Using device: {self.device}")
 
-        self.dataset_name = dataset_name.lower()
+        self.dataset_name = dataset_name
         self.learning_rate = learning_rate
         self.max_epochs = max_epochs
         self.test_size = test_size
