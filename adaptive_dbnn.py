@@ -3964,71 +3964,71 @@ def configure_debug(config):
     else:
         DEBUG.disable()
 
+def remove_comments(json_str):
+        # Remove single-line comments (//) and multi-line comments (/* */)
+        lines = []
+        in_multiline_comment = False
+        in_string = False
+        quote_char = None
+        i = 0
+        current_line = []
+
+        while i < len(json_str):
+            char = json_str[i]
+
+            # Handle string literals
+            if char in ['"', "'"] and (i == 0 or json_str[i-1] != '\\'):
+                if not in_string:
+                    in_string = True
+                    quote_char = char
+                elif char == quote_char:
+                    in_string = False
+                    quote_char = None
+
+            # Skip processing if we're in a string
+            if in_string:
+                current_line.append(char)
+                i += 1
+                continue
+
+            # Handle multi-line comments
+            if not in_multiline_comment and char == '/' and i + 1 < len(json_str) and json_str[i + 1] == '*':
+                in_multiline_comment = True
+                i += 2
+                continue
+            elif in_multiline_comment and char == '*' and i + 1 < len(json_str) and json_str[i + 1] == '/':
+                in_multiline_comment = False
+                i += 2
+                continue
+            elif in_multiline_comment:
+                i += 1
+                continue
+
+            # Handle single-line comments
+            if char == '/' and i + 1 < len(json_str) and json_str[i + 1] == '/':
+                # Skip to the end of the line
+                while i < len(json_str) and json_str[i] != '\n':
+                    i += 1
+                continue
+
+            # Handle newlines
+            if char == '\n':
+                if current_line:
+                    lines.append(''.join(current_line))
+                current_line = []
+            else:
+                current_line.append(char)
+            i += 1
+
+        # Add the last line if it exists
+        if current_line:
+            lines.append(''.join(current_line))
+
+        return '\n'.join(line.strip() for line in lines if line.strip())
+
 def load_global_config():
     """Load global configuration parameters with improved handling."""
     try:
-        def remove_comments(json_str):
-            # Remove single-line comments (//) and multi-line comments (/* */)
-            lines = []
-            in_multiline_comment = False
-            in_string = False
-            quote_char = None
-            i = 0
-            current_line = []
-
-            while i < len(json_str):
-                char = json_str[i]
-
-                # Handle string literals
-                if char in ['"', "'"] and (i == 0 or json_str[i-1] != '\\'):
-                    if not in_string:
-                        in_string = True
-                        quote_char = char
-                    elif char == quote_char:
-                        in_string = False
-                        quote_char = None
-
-                # Skip processing if we're in a string
-                if in_string:
-                    current_line.append(char)
-                    i += 1
-                    continue
-
-                # Handle multi-line comments
-                if not in_multiline_comment and char == '/' and i + 1 < len(json_str) and json_str[i + 1] == '*':
-                    in_multiline_comment = True
-                    i += 2
-                    continue
-                elif in_multiline_comment and char == '*' and i + 1 < len(json_str) and json_str[i + 1] == '/':
-                    in_multiline_comment = False
-                    i += 2
-                    continue
-                elif in_multiline_comment:
-                    i += 1
-                    continue
-
-                # Handle single-line comments
-                if char == '/' and i + 1 < len(json_str) and json_str[i + 1] == '/':
-                    # Skip to the end of the line
-                    while i < len(json_str) and json_str[i] != '\n':
-                        i += 1
-                    continue
-
-                # Handle newlines
-                if char == '\n':
-                    if current_line:
-                        lines.append(''.join(current_line))
-                    current_line = []
-                else:
-                    current_line.append(char)
-                i += 1
-
-            # Add the last line if it exists
-            if current_line:
-                lines.append(''.join(current_line))
-
-            return '\n'.join(line.strip() for line in lines if line.strip())
-
         # Define the path to the global configuration file
         global_config_path = os.path.join("data", "adaptive_dbnn.conf")
 
