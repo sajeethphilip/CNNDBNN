@@ -365,7 +365,8 @@ class DatasetConfig:
     @staticmethod
     def load_config(dataset_name: str) -> Dict:
         """Load configuration from the data/<dataset_name>/adaptive_dbnn.conf file."""
-        config_path = os.path.join("data", dataset_name, "adaptive_dbnn.conf")
+        #config_path = os.path.join("data", dataset_name, "adaptive_dbnn.conf")
+        config_path = os.path.join("data", dataset_name, f"{dataset_name}.conf")
         try:
             if not os.path.exists(config_path):
                 print(f"Configuration file {config_path} not found.")
@@ -1145,6 +1146,44 @@ class GPUDBNN:
             raise RuntimeError(f"Failed to load dataset: {str(e)}")
 
     def _compute_batch_posterior(self, features: torch.Tensor, epsilon: float = 1e-10):
+        batch_size = features.shape[0]
+        n_classes = len(self.likelihood_params['classes'])
+        log_likelihoods = torch.zeros((batch_size, n_classes), device=self.device)
+
+        # Vectorized computation for all feature groups
+        for group_idx, feature_group in enumerate(self.likelihood_params['feature_pairs']):
+            bin_edges = self.likelihood_params['bin_edges'][group_idx]
+            bin_probs = self.likelihood_params['bin_probs'][group_idx]
+
+            # Get feature pair data for the entire batch
+            pair_data = features[:, feature_group]
+
+            # Vectorized binning
+            bin_indices = torch.stack([
+                torch.bucketize(pair_data[:, dim], bin_edges[dim]) - 1
+                for dim in range(2)
+            ]).clamp_(0, bin_probs.shape[1] - 1)
+
+            # Get bin-specific weights for all classes
+            bin_weights = torch.stack([
+                self.weight_updater.get_histogram_weights(class_idx, group_idx)
+                for class_idx in range(n_classes)
+            ])
+
+            # Gather probabilities and weights using advanced indexing
+            weighted_probs = bin_probs * bin_weights[:, bin_indices[0], bin_indices[1]]
+
+            # Sum log-likelihoods across feature groups
+            log_likelihoods += torch.log(weighted_probs + epsilon)
+
+        # Normalize posteriors
+        max_log_likelihood = log_likelihoods.max(dim=1, keepdim=True)[0]
+        posteriors = torch.exp(log_likelihoods - max_log_likelihood)
+        posteriors /= posteriors.sum(dim=1, keepdim=True) + epsilon
+
+        return posteriors
+
+    def _compute_batch_posterior_old(self, features: torch.Tensor, epsilon: float = 1e-10):
         """Optimized batch posterior with vectorized operations"""
         # Safety checks
         if self.weight_updater is None:
@@ -2096,8 +2135,74 @@ class GPUDBNN:
 
         return combinations_tensor
 #-----------------------------------------------------------------------------Bin model ---------------------------
-
     def _compute_pairwise_likelihood_parallel(self, dataset: torch.Tensor, labels: torch.Tensor, feature_dims: int):
+        dataset = torch.as_tensor(dataset, device=self.device).contiguous()
+        labels = torch.as_tensor(labels, device=self.device).contiguous()
+
+        unique_classes, class_counts = torch.unique(labels, return_counts=True)
+        n_classes = len(unique_classes)
+
+        # Get bin sizes from config
+        bin_sizes = self.config.get('likelihood_config', {}).get('bin_sizes', [20])
+
+        # Generate feature combinations
+        self.feature_pairs = self._generate_feature_combinations(
+            feature_dims,
+            self.config.get('likelihood_config', {}).get('feature_group_size', 2),
+            self.config.get('likelihood_config', {}).get('max_combinations', None)
+        )
+
+        # Pre-allocate storage arrays
+        all_bin_edges = []
+        all_bin_counts = []
+        all_bin_probs = []
+
+        # Process each feature group
+        for feature_group in self.feature_pairs:
+            feature_group = [int(x) for x in feature_group]
+            group_data = dataset[:, feature_group].contiguous()
+
+            # Use custom binning
+            bin_edges = self._compute_custom_bin_edges(group_data, bin_sizes)
+
+            # Initialize bin counts
+            bin_shape = [n_classes] + [len(edges) - 1 for edges in bin_edges]
+            bin_counts = torch.zeros(bin_shape, device=self.device, dtype=torch.float32)
+
+            # Process each class
+            for class_idx, class_label in enumerate(unique_classes):
+                class_mask = labels == class_label
+                if class_mask.any():
+                    class_data = group_data[class_mask]
+
+                    # Compute bin indices
+                    bin_indices = torch.stack([
+                        torch.bucketize(class_data[:, dim], bin_edges[dim]) - 1
+                        for dim in range(len(feature_group))
+                    ]).clamp_(0, bin_shape[1] - 1)
+
+                    # Update bin counts using advanced indexing
+                    bin_counts[class_idx, bin_indices[0], bin_indices[1]] += 1
+
+            # Apply Laplace smoothing and compute probabilities
+            smoothed_counts = bin_counts + 1.0
+            bin_probs = smoothed_counts / smoothed_counts.sum(dim=tuple(range(1, len(feature_group) + 1)), keepdim=True)
+
+            # Store results
+            all_bin_edges.append(bin_edges)
+            all_bin_counts.append(smoothed_counts)
+            all_bin_probs.append(bin_probs)
+
+        return {
+            'bin_edges': all_bin_edges,
+            'bin_counts': all_bin_counts,
+            'bin_probs': all_bin_probs,
+            'feature_pairs': self.feature_pairs,
+            'classes': unique_classes
+        }
+
+
+    def _compute_pairwise_likelihood_parallel_old(self, dataset: torch.Tensor, labels: torch.Tensor, feature_dims: int):
         """Optimized non-parametric likelihood computation with configurable bin sizes"""
         DEBUG.log(" Starting _compute_pairwise_likelihood_parallel")
 
@@ -2338,6 +2443,52 @@ class GPUDBNN:
             )
 
     def _update_priors_parallel(self, failed_cases: List[Tuple], batch_size: int = 32):
+        n_failed = len(failed_cases)
+        if n_failed == 0:
+            self.consecutive_successes += 1
+            return
+
+        self.consecutive_successes = 0
+        self.learning_rate = max(self.learning_rate / 2, 1e-6)
+
+        # Stack all features and convert classes at once
+        features = torch.stack([case[0] for case in failed_cases]).to(self.device)
+        true_classes = torch.tensor([int(case[1]) for case in failed_cases], device=self.device)
+
+        # Compute posteriors for all cases at once
+        if modelType == "Histogram":
+            posteriors, bin_indices = self._compute_batch_posterior(features)
+        else:  # Gaussian model
+            posteriors, _ = self._compute_batch_posterior_std(features)
+            return  # Gaussian model doesn't need bin-based updates
+
+        pred_classes = torch.argmax(posteriors, dim=1)
+
+        # Compute adjustments for all cases at once
+        true_posteriors = posteriors[torch.arange(n_failed), true_classes]
+        pred_posteriors = posteriors[torch.arange(n_failed), pred_classes]
+        adjustments = self.learning_rate * (1.0 - (true_posteriors / pred_posteriors))
+
+        # Batch updates for all feature groups and classes
+        for group_idx in bin_indices:
+            bin_i, bin_j = bin_indices[group_idx]
+
+            # Group updates by class for vectorization
+            for class_id in range(self.weight_updater.n_classes):
+                class_mask = true_classes == class_id
+                if not class_mask.any():
+                    continue
+
+                # Get relevant indices and adjustments for this class
+                class_bin_i = bin_i[class_mask]
+                class_bin_j = bin_j[class_mask]
+                class_adjustments = adjustments[class_mask]
+
+                # Update weights for this class using advanced indexing
+                weights = self.weight_updater.histogram_weights[class_id][group_idx]
+                weights[class_bin_i, class_bin_j] += class_adjustments
+
+    def _update_priors_parallel_old(self, failed_cases: List[Tuple], batch_size: int = 32):
         """Vectorized weight updates with proper error handling"""
         n_failed = len(failed_cases)
         if n_failed == 0:
