@@ -1275,7 +1275,7 @@ class AdaptiveCNNDBNN:
         default_config = {
             'file_path': csv_path,
             'column_names': [f'feature_{i}' for i in range(self.feature_dims)] + ['target'],
-            'target_column': self.config.get('target_column', 'target'),
+            'target_column': 'target',
             'separator': ',',
             'has_header': True,
             'likelihood_config': {
@@ -1285,16 +1285,31 @@ class AdaptiveCNNDBNN:
             },
             'active_learning': {
                 'tolerance': 1.0,
-                'cardinality_threshold_percentile': 95,
-                'strong_margin_threshold': 0.3,
-                'marginal_margin_threshold': 0.1,
-                'min_divergence': 0.1
+                'cardinality_threshold_percentile': 95
             },
             'training_params': {
+                'trials': 100,
+                'cardinality_threshold': 0.9,
+                'cardinality_tolerance': 4,
+                'learning_rate': float(self.learning_rate),
+                'random_seed': 42,
+                'epochs': 1000,
+                'test_fraction': 0.2,
+                'enable_adaptive': True,
+                'compute_device': str(self.device),
+                'modelType': 'Histogram',
+                'use_interactive_kbd': False,
                 'Save_training_epochs': True,
-                'training_save_path': f'training_data/{dataset_name}'
+                'training_save_path': f"data/{dataset_name}/training_data"
             },
-            'modelType': 'Histogram'
+            'execution_flags': {
+                'train': True,
+                'train_only': False,
+                'predict': True,
+                'gen_samples': False,
+                'fresh_start': False,
+                'use_previous_model': True
+            }
         }
 
         # Load existing config if it exists
