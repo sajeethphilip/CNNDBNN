@@ -1599,7 +1599,7 @@ class GPUDBNN:
         self.in_adaptive_fit = True
         train_indices = []
         test_indices = None
-
+        config=self.config
         try:
             # Get initial data
             #X = self.data.drop(columns=[self.target_column])
