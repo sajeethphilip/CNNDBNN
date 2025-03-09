@@ -670,8 +670,6 @@ class CNNDBNN(GPUDBNN):
 
 class CDBNN(GPUDBNN):
     """Custom DBNN class that inherits from GPUDBNN and handles config properly."""
-
-
     def __init__(self, dataset_name: str, config: Dict, **kwargs):
         """Initialize the CDBNN class with the given config."""
         super().__init__()
