@@ -1154,15 +1154,21 @@ class GPUDBNN:
         n_classes = len(self.likelihood_params['classes'])
         log_likelihoods = torch.zeros((batch_size, n_classes), device=self.device)
 
+        # Initialize bin_indices as a dictionary
+        bin_indices = {}
+
         for group_idx, feature_group in enumerate(self.likelihood_params['feature_pairs']):
             bin_edges = self.likelihood_params['bin_edges'][group_idx]
             bin_probs = self.likelihood_params['bin_probs'][group_idx]
 
             # Compute bin indices for each feature in the group
-            bin_indices = torch.stack([
+            group_bin_indices = torch.stack([
                 torch.bucketize(features[:, feature_idx], bin_edges[dim]) - 1
                 for dim, feature_idx in enumerate(feature_group)
             ]).clamp_(0, self.n_bins_per_dim - 1)
+
+            # Store bin indices for this group
+            bin_indices[group_idx] = group_bin_indices
 
             # Iterate over all classes to compute log-likelihoods
             for class_idx in range(n_classes):
@@ -1173,7 +1179,7 @@ class GPUDBNN:
                 )
 
                 # Apply bin-specific weights to probabilities
-                weighted_probs = bin_probs[class_idx][tuple(bin_indices)] * bin_weights[tuple(bin_indices)]
+                weighted_probs = bin_probs[class_idx][tuple(group_bin_indices)] * bin_weights[tuple(group_bin_indices)]
 
                 # Compute log-likelihood for this feature group and class
                 group_log_likelihoods = torch.log(weighted_probs + epsilon)
@@ -2482,8 +2488,7 @@ class GPUDBNN:
         # Batch updates for all feature groups and classes
         for group_idx in range(len(self.feature_pairs)):
             # Get bin indices for the current feature group
-            if bin_indices is not None:
-                # Get the bin indices for this group
+            if bin_indices is not None and group_idx in bin_indices:
                 group_bin_indices = bin_indices[group_idx]
 
                 # Group updates by class for vectorization
