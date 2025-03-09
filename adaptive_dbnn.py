@@ -4145,6 +4145,17 @@ if __name__ == "__main__":
     # Load configuration before class definition
     fresh_start, use_previous_model = load_global_config()
 
+    # Debug: Print configuration values
+    DEBUG.log(f"Fresh start: {fresh_start}")
+    DEBUG.log(f"Use previous model: {use_previous_model}")
+    DEBUG.log(f"Train: {Train}")
+    DEBUG.log(f"Train_only: {Train_only}")
+    DEBUG.log(f"Predict: {Predict}")
+    DEBUG.log(f"Gen_Samples: {Gen_Samples}")
+    DEBUG.log(f"EnableAdaptive: {EnableAdaptive}")
+    DEBUG.log(f"nokbd: {nokbd}")
+
+    # Handle keyboard interaction
     if nokbd == False:
         print("Will attempt keyboard interaction...")
         if os.name == 'nt' or 'darwin' in os.uname()[0].lower():  # Windows or MacOS
@@ -4192,16 +4203,22 @@ if __name__ == "__main__":
             else:
                 print("Keyboard control using q key for skipping training is not supported without X11!")
     else:
-        print('Keyboard is disabled . You can enable it in config')
+        print('Keyboard is disabled. You can enable it in config')
 
+    # Debug: Print keyboard interaction status
+    DEBUG.log(f"Keyboard interaction enabled: {not nokbd}")
+
+    # Generate test datasets if enabled
     if Gen_Samples:
         generate_test_datasets()
 
-    DEBUG.log(f"Fresh start: {fresh_start}")
-    DEBUG.log(f"Use previous model: {use_previous_model}")
+    # Debug: Print dataset generation status
+    DEBUG.log(f"Test datasets generated: {Gen_Samples}")
 
     # Test datasets
     datasets_to_test = DatasetConfig.get_available_datasets(create_configs=False)
+    DEBUG.log(f"Datasets to test: {datasets_to_test}")
+
     for dataset in datasets_to_test:
         if any(suffix in dataset for suffix in [
             '_last_testing', '_Last_testing',
@@ -4220,6 +4237,9 @@ if __name__ == "__main__":
             print(f"Skipping dataset {dataset}: data file not found")
             continue
 
+        # Debug: Print dataset configuration
+        DEBUG.log(f"Config for {dataset}: {config}")
+
         model = GPUDBNN(
             dataset_name=dataset,
             learning_rate=LearningRate,
@@ -4231,14 +4251,17 @@ if __name__ == "__main__":
         )
 
         if Train:
+            DEBUG.log(f"Training model for dataset: {dataset}")
             model, results = run_gpu_benchmark(dataset, model)
 
         if Train_only:
+            DEBUG.log(f"Training-only mode for dataset: {dataset}")
             results = model.fit_predict(
                 save_path=os.path.join("data", dataset, f"{dataset}_train_test_predictions.csv")
             )
 
         if Predict:
+            DEBUG.log(f"Making predictions for dataset: {dataset}")
             predictions = model.predict_and_save(
                 save_path=os.path.join("data", dataset, f"{dataset}_predictions.csv")
             )
