@@ -2930,7 +2930,7 @@ class GPUDBNN:
 
     def train(self, X_train: torch.Tensor, y_train: torch.Tensor, X_test: torch.Tensor, y_test: torch.Tensor, batch_size: int = 32):
         """
-        Training loop with testing every 5 epochs to save computation time.
+        Training loop that breaks if training accuracy reaches 100% or loss flattens.
         """
         # Ensure the output directory exists
         os.makedirs(self.training_save_path, exist_ok=True)
@@ -3010,8 +3010,8 @@ class GPUDBNN:
         # Create a tqdm progress bar for epochs
         epoch_bar = tqdm(range(self.max_epochs), desc="Epochs", unit="epoch")
 
-        # Track the last epoch where testing was performed
-        last_test_epoch = -1
+        # Initialize test_predictions to None
+        test_predictions = None
 
         for epoch in epoch_bar:
             # Track training time
@@ -3058,12 +3058,27 @@ class GPUDBNN:
             # Close the batch progress bar
             batch_bar.close()
 
-            # Calculate training error rate
+            # Calculate training error rate and accuracy
             train_error_rate = n_errors / n_samples
+            train_accuracy = 1.0 - train_error_rate
             error_rates.append(train_error_rate)
+            train_accuracies.append(train_accuracy)
 
-            # Perform testing every 5 epochs
-            if (epoch + 1) % 5 == 0 or epoch == self.max_epochs - 1:
+            # Check if training accuracy reaches 100%
+            if train_accuracy >= 1.0:
+                print(f"\nTraining accuracy reached 100% at epoch {epoch + 1}. Stopping training.")
+                stop_training = True
+
+            # Check if training loss has flattened
+            if len(error_rates) >= 5:
+                # Calculate the average improvement over the last 5 epochs
+                recent_improvement = abs(error_rates[-5] - error_rates[-1])
+                if recent_improvement < 1e-4:  # Threshold for flattening
+                    print(f"\nTraining loss has flattened at epoch {epoch + 1}. Stopping training.")
+                    stop_training = True
+
+            # Perform testing and update training data if training is stopped
+            if stop_training or (epoch + 1) % 5 == 0 or epoch == self.max_epochs - 1:
                 # Track testing time
                 test_start_time = time.time()
 
@@ -3090,7 +3105,7 @@ class GPUDBNN:
                 # Log the epoch metrics
                 train_sample_size = n_samples
                 test_size = len(X_test)
-                self.log_training_epoch(epoch, train_sample_size, time.time() - train_start_time, 1 - train_error_rate, test_size, test_time, test_accuracy, log_file_path)
+                self.log_training_epoch(epoch, train_sample_size, time.time() - train_start_time, train_accuracy, test_size, test_time, test_accuracy, log_file_path)
 
                 # Update previous values for next iteration
                 prev_train_error = train_error_rate
@@ -3118,15 +3133,22 @@ class GPUDBNN:
                     print(f"No significant improvement for {self.patience} epochs. Early stopping.")
                     break
 
+            if stop_training:
+                break
+
             if failed_cases:
                 self._update_priors_parallel(failed_cases, batch_size)
 
-            # Calculate and store metrics
+            # Calculate test loss only if test_predictions is defined
+            if test_predictions is not None:
+                test_loss = (test_predictions != y_test.cpu()).float().mean()
+            else:
+                test_loss = float('inf')  # Set to a default value if no testing was performed
+
+            # Store metrics
             train_loss = n_errors / n_samples
             train_pred = self.predict(X_train, batch_size)
             train_acc = (train_pred == y_train.cpu()).float().mean()
-
-            test_loss = (test_predictions != y_test.cpu()).float().mean()
 
             # Store metrics
             train_losses.append(train_loss)
