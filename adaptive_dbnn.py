@@ -845,6 +845,9 @@ class GPUDBNN:
 
         # Load configuration and data
         self.config = DatasetConfig.load_config(self.dataset_name)
+        # Set model type
+        self.modelType = self.config.get('training_params', {}).get('modelType', 'Gaussian')
+        print(f"[DEBUG] Initialized GPUDBNN with modelType: {self.modelType}")
         self.target_column = self.config['target_column']
         self.training_save_path = self.config['training_params']['training_save_path']
         # Initialize model components
