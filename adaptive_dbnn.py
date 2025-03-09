@@ -1,5 +1,6 @@
 import torch
 import time
+import argparse
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
@@ -4351,13 +4352,18 @@ def load_global_config(dataset=None):
         print("Using default values")
         return False, True
 
-if __name__ == "__main__":
-    # Load configuration before class definition
-    #fresh_start, use_previous_model = load_global_config()
+
+
+def main():
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description='Process ML datasets using DBNN')
+    parser.add_argument("--file_path", nargs='?', help="Path to dataset file or folder")
+    parser.add_argument('--mode', type=str, choices=['train', 'train_predict', 'invertDBNN'],
+                        required=False, default='train_predict',
+                        help="Mode to run the network: train, train_predict, or invertDBNN.")
+    args = parser.parse_args()
 
     # Debug: Print configuration values
-    #DEBUG.log(f"Fresh start: {fresh_start}")
-    #DEBUG.log(f"Use previous model: {use_previous_model}")
     DEBUG.log(f"Train: {Train}")
     DEBUG.log(f"Train_only: {Train_only}")
     DEBUG.log(f"Predict: {Predict}")
@@ -4425,10 +4431,12 @@ if __name__ == "__main__":
     # Debug: Print dataset generation status
     DEBUG.log(f"Test datasets generated: {Gen_Samples}")
     print("Here")
+
     # Test datasets
     datasets_to_test = DatasetConfig.get_available_datasets(create_configs=False)
     DEBUG.log(f"Datasets to test: {datasets_to_test}")
     print(datasets_to_test)
+
     for dataset in datasets_to_test:
         if any(suffix in dataset for suffix in [
             '_last_testing', '_Last_testing',
@@ -4460,17 +4468,11 @@ if __name__ == "__main__":
             use_previous_model=use_previous_model  # Pass this flag
         )
 
-        if Train:
+        if args.mode == 'train' or args.mode == 'train_predict':
             DEBUG.log(f"Training model for dataset: {dataset}")
             model, results = run_gpu_benchmark(dataset, model)
 
-        if Train_only:
-            DEBUG.log(f"Training-only mode for dataset: {dataset}")
-            results = model.fit_predict(
-                save_path=os.path.join("data", dataset, f"{dataset}_train_test_predictions.csv")
-            )
-
-        if Predict:
+        if args.mode == 'train_predict' or args.mode == 'invertDBNN':
             DEBUG.log(f"Making predictions for dataset: {dataset}")
             predictions = model.predict_and_save(
                 save_path=os.path.join("data", dataset, f"{dataset}_predictions.csv")
@@ -4510,15 +4512,10 @@ if __name__ == "__main__":
                             use_previous_model=use_previous_model
                         )
 
-                        if Train:
+                        if args.mode == 'train' or args.mode == 'train_predict':
                             model, results = run_gpu_benchmark(dataset, model)
 
-                        if Train_only:
-                            results = model.fit_predict(
-                                save_path=os.path.join("data", dataset, f"{dataset}_train_test_predictions.csv")
-                            )
-
-                        if Predict:
+                        if args.mode == 'train_predict' or args.mode == 'invertDBNN':
                             predictions = model.predict_and_save(
                                 save_path=os.path.join("data", dataset, f"{dataset}_predictions.csv")
                             )
@@ -4529,3 +4526,6 @@ if __name__ == "__main__":
                     except Exception as e:
                         print(f"Error processing {dataset}: {str(e)}")
                         traceback.print_exc()
+
+if __name__ == "__main__":
+    main()
