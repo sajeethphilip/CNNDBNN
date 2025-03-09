@@ -342,7 +342,7 @@ class DatasetConfig:
 
 
 
-     @staticmethod
+    @staticmethod
     def get_available_datasets(create_configs: bool = False) -> List[str]:
         """Get list of available dataset configurations by scanning the data folder."""
         data_dir = "data"
