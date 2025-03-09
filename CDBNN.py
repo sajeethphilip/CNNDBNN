@@ -680,7 +680,8 @@ class CDBNN(GPUDBNN):
 
         with open(config_path, 'r') as f:
             self.config = json.load(f)
-
+        self.target_column = self.config['target_column']
+        self.training_save_path = self.config['training_params']['training_save_path']
 
     def adaptive_fit_predict(self, max_rounds: int = 10,
                             improvement_threshold: float = 0.001,
