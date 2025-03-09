@@ -552,7 +552,7 @@ class FeatureExtractorCNN(nn.Module):
             x = self.batch_norm(x)
         return x
 
-def setup_dbnn_environment(device: str, learning_rate: float):
+def setup_dbnn_environment(device: str, learning_rate: float,dataset_name=None):
     """Setup global environment for DBNN."""
     import adaptive_dbnn
     import os
@@ -575,7 +575,7 @@ def setup_dbnn_environment(device: str, learning_rate: float):
     os.makedirs('training_data', exist_ok=True)
 
     # Create DBNN config
-    config_path = 'adaptive_dbnn.conf'
+    config_path = os.path.join("data", dataset_name, "adaptive_dbnn.conf")
     config = {
         'training_params': {
             'trials': 100,
@@ -1015,7 +1015,7 @@ class AdaptiveCNNDBNN:
         csv_path, conf_path = self.prepare_custom_data()
 
         # Sync CNN and DBNN configs
-        setup_dbnn_environment(self.device, self.learning_rate)
+        setup_dbnn_environment(self.device, self.learning_rate,dataset_name=self.dataset_name)
         self.sync_configs()
 
         self.classifier = CDBNN(
