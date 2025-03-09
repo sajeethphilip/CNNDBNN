@@ -2931,7 +2931,7 @@ class GPUDBNN:
 
     def train(self, X_train: torch.Tensor, y_train: torch.Tensor, X_test: torch.Tensor, y_test: torch.Tensor, batch_size: int = 32):
         """
-        Optimized training loop with improved memory efficiency and vectorization.
+        Optimized training loop with static single-line progress messages.
         """
         # Ensure the output directory exists
         os.makedirs(self.training_save_path, exist_ok=True)
@@ -3014,11 +3014,17 @@ class GPUDBNN:
         # Initialize test_predictions to None
         test_predictions = None
 
+        # Start time for the training process
+        start_time = time.time()
+
         for epoch in epoch_bar:
             # Track training time
             train_start_time = time.time()
             failed_cases = []
             n_errors = 0
+
+            # Update static message for the current epoch
+            update_static_message(f"Epoch {epoch + 1}/{self.max_epochs} | Start Time: {time.strftime('%H:%M:%S')} | Elapsed: {time.time() - start_time:.2f}s")
 
             # Create a tqdm progress bar for training batches
             batch_bar = tqdm(range(0, n_samples, batch_size), desc="Training", unit="batch", leave=False)
@@ -4352,7 +4358,13 @@ def load_global_config(dataset=None):
         print("Using default values")
         return False, True
 
-
+def update_static_message(message):
+    """
+    Update a static single-line message in the terminal.
+    Clears the current line and writes the new message.
+    """
+    # ANSI escape code to clear the current line and move the cursor to the start
+    print(f"\r\033[K{message}", end="", flush=True)
 
 def main():
     # Parse command-line arguments
