@@ -4145,7 +4145,7 @@ if __name__ == "__main__":
     # Load configuration before class definition
     fresh_start, use_previous_model = load_global_config()
 
-    if nokbd==False:
+    if nokbd == False:
         print("Will attempt keyboard interaction...")
         if os.name == 'nt' or 'darwin' in os.uname()[0].lower():  # Windows or MacOS
             try:
@@ -4194,7 +4194,6 @@ if __name__ == "__main__":
     else:
         print('Keyboard is disabled . You can enable it in config')
 
-
     if Gen_Samples:
         generate_test_datasets()
 
@@ -4221,7 +4220,6 @@ if __name__ == "__main__":
             print(f"Skipping dataset {dataset}: data file not found")
             continue
 
-
         model = GPUDBNN(
             dataset_name=dataset,
             learning_rate=LearningRate,
@@ -4233,16 +4231,16 @@ if __name__ == "__main__":
         )
 
         if Train:
-            model, results = run_gpu_benchmark(dataset,model)
+            model, results = run_gpu_benchmark(dataset, model)
 
         if Train_only:
             results = model.fit_predict(
-                save_path=f"{dataset}_train_test_predictions.csv"
+                save_path=os.path.join("data", dataset, f"{dataset}_train_test_predictions.csv")
             )
 
         if Predict:
             predictions = model.predict_and_save(
-                save_path=f"{dataset}_predictions.csv"
+                save_path=os.path.join("data", dataset, f"{dataset}_predictions.csv")
             )
 
         print(f"\nCompleted benchmark for {dataset}")
@@ -4284,12 +4282,12 @@ if __name__ == "__main__":
 
                         if Train_only:
                             results = model.fit_predict(
-                                save_path=f"{dataset}_train_test_predictions.csv"
+                                save_path=os.path.join("data", dataset, f"{dataset}_train_test_predictions.csv")
                             )
 
                         if Predict:
                             predictions = model.predict_and_save(
-                                save_path=f"{dataset}_predictions.csv"
+                                save_path=os.path.join("data", dataset, f"{dataset}_predictions.csv")
                             )
 
                         print(f"\nCompleted benchmark for {dataset}")
