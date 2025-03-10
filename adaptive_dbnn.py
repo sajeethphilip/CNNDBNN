@@ -3051,11 +3051,11 @@ class GPUDBNN:
 
                 print("Making predictions", end="\r", flush=True)
                 predictions[:current_batch_size] = torch.argmax(posteriors, dim=1)
-                print("Applying mask to find the failed instances", end="\r", flush=True)
+                print("Applying mask to find the failed instances             ", end="\r", flush=True)
                 batch_mask[:current_batch_size] = (predictions[:current_batch_size] != batch_y)
 
                 n_errors += batch_mask[:current_batch_size].sum().item()
-                print("Stacking the failed instances", end="\r", flush=True)
+                print("Stacking the failed instances                          ", end="\r", flush=True)
                 if batch_mask[:current_batch_size].any():
                     failed_indices = torch.where(batch_mask[:current_batch_size])[0]
                     for idx in failed_indices:
@@ -3083,7 +3083,7 @@ class GPUDBNN:
 
             # Check if training accuracy reaches 100%
             if train_accuracy >= 1.0:
-                print(f"\nTraining accuracy reached 100% at epoch {epoch + 1}. Stopping training.")
+                print(f"\nTraining accuracy reached 100% at epoch {epoch + 1}. Stopping training." , end="\r", flush=True)
                 stop_training = True
 
             # Check if training loss has flattened
@@ -3149,7 +3149,7 @@ class GPUDBNN:
                     patience_counter += 1
 
                 if patience_counter >= self.patience:
-                    print(f"No significant improvement for {self.patience} epochs. Early stopping.")
+                    print(f"No significant improvement for {self.patience} epochs. Early stopping." , end="\r", flush=True)
                     break
 
             if stop_training:
@@ -3177,6 +3177,7 @@ class GPUDBNN:
             test_accuracies.append(test_accuracy)
 
         self._save_model_components()
+        print(f"returning from training loop" , end="\r", flush=True)
         return self.current_W.cpu(), error_rates
 
     def plot_training_metrics(self, train_loss, test_loss, train_acc, test_acc, save_path=None):
