@@ -3678,7 +3678,7 @@ class GPUDBNN:
             'n_bins_per_dim': self.n_bins_per_dim,
             'dim_min': self.dim_min,
             'dim_max': self.dim_max
-        }
+            }
 
         # Get the filename using existing method
         components_file = self._get_model_components_filename()
