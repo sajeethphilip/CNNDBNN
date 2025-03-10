@@ -2365,6 +2365,9 @@ class GPUDBNN:
         # Use stored bin edges
         all_bin_edges = self.data_preprocessor.bin_edges
 
+        # Ensure all_bin_edges are on the correct device
+        all_bin_edges = [[edge.to(self.device) for edge in group] for group in all_bin_edges]
+
         # Rest of the likelihood computation remains the same
         unique_classes, class_counts = torch.unique(labels, return_counts=True)
         n_classes = len(unique_classes)
@@ -2387,6 +2390,9 @@ class GPUDBNN:
                 if class_mask.any():
                     class_data = group_data[class_mask]
 
+                    # Ensure class_data is on the correct device
+                    class_data = class_data.to(self.device)
+
                     # Compute bin indices for each feature in the group
                     group_bin_indices = torch.stack([
                         torch.bucketize(class_data[:, dim], all_bin_edges[group_idx][dim]) - 1
@@ -2398,7 +2404,7 @@ class GPUDBNN:
 
             # Apply Laplace smoothing and compute probabilities
             smoothed_counts = bin_counts + 1.0
-            bin_probs = smoothed_counts / smoothed_counts.sum(dim=tuple(range(1, len(feature_group) + 1)), keepdim=True)
+            bin_probs = smoothed_counts / smoothed_counts.sum(dim=tuple(range(1, len(feature_group) + 1), keepdim=True)
 
             # Store results
             all_bin_counts.append(smoothed_counts)
@@ -3134,10 +3140,11 @@ class GPUDBNN:
         log_file_path = os.path.join(self.training_save_path, f"{self.dataset_name}_training_log.csv")
 
         # Store tensors as class attributes for access during training
-        self.X_train_tensor = X_train
-        self.y_train_tensor = y_train
-        self.X_test_tensor = X_test
-        self.y_test_tensor = y_test
+        # Ensure all tensors are on the correct device
+        X_train = X_train.to(self.device)
+        y_train = y_train.to(self.device)
+        X_test = X_test.to(self.device)
+        y_test = y_test.to(self.device)
 
         # Handle data transfer to GPU correctly
         print("Setting up training and test data", end="\r", flush=True)
