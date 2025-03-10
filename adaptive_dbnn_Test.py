@@ -177,10 +177,13 @@ class DataPreprocessor:
         return bounds
 
     def _save_preprocessing_info(self):
-        """Save preprocessing information to file"""
+        """Save preprocessing information to file."""
         preprocessing_info = {
             'feature_groups': self.feature_groups,
-            'bin_edges': [be.tolist() for be in self.bin_edges],
+            'bin_edges': [
+                [edge.tolist() if hasattr(edge, 'tolist') else edge for edge in group]
+                for group in self.bin_edges
+            ],
             'scalers': [s.__getstate__() for s in self.scalers],
             'feature_bounds': self.feature_bounds,
             'n_bins_per_dim': self.n_bins_per_dim
