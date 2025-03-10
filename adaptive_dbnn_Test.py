@@ -1269,6 +1269,7 @@ class GPUDBNN:
 
             # After loading data, preprocess and store information if needed
             if not hasattr(self, 'preprocessing_done') or self.fresh_start:
+                # Ensure we use the full dataset (df) for preprocessing
                 X = df.drop(columns=[self.target_column])
                 y = df[self.target_column]
 
@@ -1283,6 +1284,7 @@ class GPUDBNN:
             DEBUG.log(f"Error loading dataset: {str(e)}")
             DEBUG.log("Stack trace:", traceback.format_exc())
             raise RuntimeError(f"Failed to load dataset: {str(e)}")
+
 
     def _compute_batch_posterior(self, features: torch.Tensor, epsilon: float = 1e-10):
         batch_size = features.shape[0]
@@ -2062,6 +2064,13 @@ class GPUDBNN:
                 raise ValueError("Dataset not loaded. Call _load_dataset first.")
             data = self.data
 
+        # Validate that the target column exists
+        if self.target_column not in data.columns:
+            raise ValueError(
+                f"Target column '{self.target_column}' not found in dataset. "
+                f"Available columns: {data.columns.tolist()}"
+            )
+
         n_samples = len(data)
         n_classes = len(data[self.target_column].unique())
 
@@ -2190,7 +2199,7 @@ class GPUDBNN:
         X = X.copy()
 
         # Calculate cardinality threshold using the provided data
-        cardinality_threshold = self._calculate_cardinality_threshold(data=X)
+        cardinality_threshold = self._calculate_cardinality_threshold(data=self.data)
         DEBUG.log(f"Cardinality threshold: {cardinality_threshold}")
 
         # Rest of the preprocessing logic remains the same
