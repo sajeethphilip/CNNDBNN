@@ -26,8 +26,8 @@ from datetime import datetime
 from pathlib import Path
 import pandas as pd
 from tqdm import tqdm
-from adaptive_dbnn import GPUDBNN
-from adaptive_dbnn import BinWeightUpdater
+from adaptive_dbnn_Test import GPUDBNN
+from adaptive_dbnn_Test import BinWeightUpdater
 from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
 import torch
