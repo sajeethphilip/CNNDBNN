@@ -1419,7 +1419,7 @@ class GPUDBNN:
         posteriors = torch.exp(log_likelihoods - max_log_likelihood)
         posteriors /= posteriors.sum(dim=1, keepdim=True) + epsilon
 
-        return posteriors, bin_indices_dict if modelType == "Histogram" else None
+        return posteriors, bin_indices_dict if self.modelType == "Histogram" else None
 #----------------------
 
     def set_feature_bounds(self, dataset):
@@ -1475,9 +1475,9 @@ class GPUDBNN:
 
         # Save indices
         try:
-            with open(os.path.join(epoch_dir, f'{modelType}_train_indices.pkl'), 'wb') as f:
+            with open(os.path.join(epoch_dir, f'{self.modelType}_train_indices.pkl'), 'wb') as f:
                 pickle.dump(train_indices, f)
-            with open(os.path.join(epoch_dir, f'{modelType}_test_indices.pkl'), 'wb') as f:
+            with open(os.path.join(epoch_dir, f'{self.modelType}_test_indices.pkl'), 'wb') as f:
                 pickle.dump(test_indices, f)
             print(f"Saved epoch {epoch} data to {epoch_dir}")
         except Exception as e:
@@ -1489,9 +1489,9 @@ class GPUDBNN:
         """
         epoch_dir = os.path.join(self.base_save_path, f'epoch_{epoch}')
 
-        with open(os.path.join(epoch_dir, f'{modelType}_train_indices.pkl'), 'rb') as f:
+        with open(os.path.join(epoch_dir, f'{self.modelType}_train_indices.pkl'), 'rb') as f:
             train_indices = pickle.load(f)
-        with open(os.path.join(epoch_dir, f'{modelType}_test_indices.pkl'), 'rb') as f:
+        with open(os.path.join(epoch_dir, f'{self.modelType}_test_indices.pkl'), 'rb') as f:
             test_indices = pickle.load(f)
 
         return train_indices, test_indices
@@ -1687,7 +1687,7 @@ class GPUDBNN:
                 batch_samples = self.X_tensor[test_indices[batch_indices]]
 
                 # Compute probabilities for batch
-                if modelType == "Histogram":
+                if self.modelType == "Histogram":
                     probs, _ = self._compute_batch_posterior(batch_samples)
                 else:
                     probs, _ = self._compute_batch_posterior_std(batch_samples)
@@ -1906,12 +1906,12 @@ class GPUDBNN:
             # Initialize likelihood parameters if needed
             if self.likelihood_params is None:
                 DEBUG.log(" Initializing likelihood parameters")
-                print(f"Computing pairwise likelihood for {modelType}", end="\r", flush=True)
-                if modelType == "Histogram":
+                print(f"Computing pairwise likelihood for {self.modelType}", end="\r", flush=True)
+                if self.modelType == "Histogram":
                     self.likelihood_params = self._compute_pairwise_likelihood_parallel(
                         self.X_tensor, self.y_tensor, self.X_tensor.shape[1]
                     )
-                elif modelType == "Gaussian":
+                elif self.modelType == "Gaussian":
                     self.likelihood_params = self._compute_pairwise_likelihood_parallel_std(
                         self.X_tensor, self.y_tensor, self.X_tensor.shape[1]
                     )
@@ -2638,13 +2638,13 @@ class GPUDBNN:
     def _initialize_bin_weights(self):
         """Initialize weights for either histogram bins or Gaussian components"""
         n_classes = len(self.label_encoder.classes_)
-        if modelType == "Histogram":
+        if self.modelType == "Histogram":
             self.weight_updater = BinWeightUpdater(
                 n_classes=n_classes,
                 feature_pairs=self.feature_pairs,
                 n_bins_per_dim=self.n_bins_per_dim
             )
-        elif modelType == "Gaussian":
+        elif self.modelType == "Gaussian":
             # Use same weight structure but for Gaussian components
             self.weight_updater = BinWeightUpdater(
                 n_classes=n_classes,
@@ -2666,7 +2666,7 @@ class GPUDBNN:
         true_classes = torch.tensor([int(case[1]) for case in failed_cases], device=self.device)
 
         # Compute posteriors for all cases at once
-        if modelType == "Histogram":
+        if self.modelType == "Histogram":
             posteriors, bin_indices = self._compute_batch_posterior(features)
         else:  # Gaussian model
             posteriors, _ = self._compute_batch_posterior_std(features)
@@ -2714,7 +2714,7 @@ class GPUDBNN:
         true_classes = torch.tensor([int(case[1]) for case in failed_cases], device=self.device)
 
         # Compute posteriors for all cases at once
-        if modelType == "Histogram":
+        if self.modelType == "Histogram":
             posteriors, bin_indices = self._compute_batch_posterior(features)
         else:  # Gaussian model
             posteriors, _ = self._compute_batch_posterior_std(features)
@@ -2952,14 +2952,14 @@ class GPUDBNN:
         try:
             for i in range(0, len(X), batch_size):
                 batch_X = X[i:min(i + batch_size, len(X))]
-                if modelType == "Histogram":
+                if self.modelType == "Histogram":
                     # Get posteriors only, ignore bin indices
                     posteriors, _ = self._compute_batch_posterior(batch_X)
-                elif modelType == "Gaussian":
+                elif self.modelType == "Gaussian":
                     # Get posteriors only, ignore component responsibilities
                     posteriors, _ = self._compute_batch_posterior_std(batch_X)
                 else:
-                    print(f"{modelType} is invalid. Please edit configuration file")
+                    print(f"{self.modelType} is invalid. Please edit configuration file")
 
                 batch_predictions = torch.argmax(posteriors, dim=1)
                 predictions.append(batch_predictions)
@@ -3520,12 +3520,12 @@ class GPUDBNN:
             batch_X = X_tensor[i:batch_end]
 
             try:
-                if modelType == "Histogram":
+                if self.modelType == "Histogram":
                     batch_probs, _ = self._compute_batch_posterior(batch_X)
-                elif modelType == "Gaussian":
+                elif self.modelType == "Gaussian":
                     batch_probs, _ = self._compute_batch_posterior_std(batch_X)
                 else:
-                    raise ValueError(f"{modelType} is invalid")
+                    raise ValueError(f"{self.modelType} is invalid")
 
                 all_probabilities.append(batch_probs.cpu().numpy())
 
@@ -3574,12 +3574,12 @@ class GPUDBNN:
             batch_X = X_tensor[i:batch_end]
 
             try:
-                if modelType == "Histogram":
+                if self.modelType == "Histogram":
                     batch_probs, _ = self._compute_batch_posterior(batch_X)
-                elif modelType == "Gaussian":
+                elif self.modelType == "Gaussian":
                     batch_probs, _ = self._compute_batch_posterior_std(batch_X)
                 else:
-                    raise ValueError(f"{modelType} is invalid")
+                    raise ValueError(f"{self.modelType} is invalid")
 
                 all_probabilities.append(batch_probs.cpu().numpy())
 
@@ -3724,11 +3724,11 @@ class GPUDBNN:
 
     def _get_weights_filename(self):
         """Get the filename for saving/loading weights"""
-        return os.path.join('Model', f'Best_{modelType}_{self.dataset_name}_weights.json')
+        return os.path.join('Model', f'Best_{self.modelType}_{self.dataset_name}_weights.json')
 
     def _get_encoders_filename(self):
         """Get the filename for saving/loading categorical encoders"""
-        return os.path.join('Model', f'Best_{modelType}_{self.dataset_name}_encoders.json')
+        return os.path.join('Model', f'Best_{self.modelType}_{self.dataset_name}_encoders.json')
 
 
 
@@ -4679,6 +4679,7 @@ def main():
             ]):
                 continue
         print(f"\nProcessing dataset: {dataset}")
+
         config = DatasetConfig.load_config(dataset)
         if config is None:
             print(f"Skipping dataset {dataset} due to invalid configuration")
