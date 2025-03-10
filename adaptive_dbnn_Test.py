@@ -1915,7 +1915,7 @@ class GPUDBNN:
                     self.likelihood_params = self._compute_pairwise_likelihood_parallel_std(
                         self.X_tensor, self.y_tensor, self.X_tensor.shape[1]
                     )
-                DEBUG.log(" Likelihood parameters computed" , end="\r", flush=True)
+                print(" Likelihood parameters computed" , end="\r", flush=True)
 
             # Initialize weights if needed
             if self.weight_updater is None:
