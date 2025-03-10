@@ -3154,7 +3154,9 @@ class GPUDBNN:
                 break
 
             if failed_cases:
+                print("Updating the priors for the failed examples" , end="\r", flush=True)
                 self._update_priors_parallel(failed_cases, batch_size)
+                print("Completed updating the priors" , end="\r", flush=True)
 
             # Calculate test loss only if test_predictions is defined
             if test_predictions is not None:
