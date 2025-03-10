@@ -2946,6 +2946,7 @@ class GPUDBNN:
         self.y_test_tensor = y_test
 
         # Handle data transfer to GPU correctly
+        print("Setting up training and test data", end="\r", flush=True)
         if self.device != 'cpu':
             if not X_train.is_cuda:
                 X_train = torch.as_tensor(X_train).pin_memory().to(self.device, non_blocking=True)
@@ -2969,10 +2970,12 @@ class GPUDBNN:
 
         # Pre-compute likelihood parameters
         if self.config['training_params']['modelType'] == "Histogram":
+            print("computing pairwise likelihood for Histogram model", end="\r", flush=True)
             self.likelihood_params = self._compute_pairwise_likelihood_parallel(
                 X_train, y_train, X_train.shape[1]
             )
         elif self.config['training_params']['modelType'] == "Gaussian":
+            print("computing pairwise likelihood for Gaussian  model", end="\r", flush=True)
             self.likelihood_params = self._compute_pairwise_likelihood_parallel_std(
                 X_train, y_train, X_train.shape[1]
             )
@@ -3013,13 +3016,13 @@ class GPUDBNN:
 
         # Initialize test_predictions to None
         test_predictions = None
-
+        test_loss=float('inf')
         # Start time for the training process
         start_time = time.time()
 
         # Initialize test_accuracy to a default value
         test_accuracy = 0.0
-
+        print("Training begins", end="\r", flush=True)
         for epoch in epoch_bar:
             # Track training time
             train_start_time = time.time()
@@ -3040,15 +3043,19 @@ class GPUDBNN:
 
                 # Compute posteriors for batch
                 if self.config['training_params']['modelType'] == "Histogram":
+                    print("computing batch posterior  for Histogram model", end="\r", flush=True)
                     posteriors, bin_indices = self._compute_batch_posterior(batch_X)
                 elif self.config['training_params']['modelType'] == "Gaussian":
+                    print("computing batch posterior  for Gaussian model", end="\r", flush=True)
                     posteriors, comp_resp = self._compute_batch_posterior_std(batch_X)
 
+                print("Making predictions", end="\r", flush=True)
                 predictions[:current_batch_size] = torch.argmax(posteriors, dim=1)
+                print("Applying mask to find the failed instances", end="\r", flush=True)
                 batch_mask[:current_batch_size] = (predictions[:current_batch_size] != batch_y)
 
                 n_errors += batch_mask[:current_batch_size].sum().item()
-
+                print("Stacking the failed instances", end="\r", flush=True)
                 if batch_mask[:current_batch_size].any():
                     failed_indices = torch.where(batch_mask[:current_batch_size])[0]
                     for idx in failed_indices:
@@ -3091,6 +3098,7 @@ class GPUDBNN:
             if stop_training or (epoch + 1) % 5 == 0 or epoch == self.max_epochs - 1:
                 # Track testing time
                 test_start_time = time.time()
+                print(f"Entering testing phase at {test_start_time}", end="\r", flush=True)
 
                 # Calculate test accuracy on all remaining test data
                 if hasattr(self, 'test_indices') and self.test_indices:
@@ -3103,6 +3111,7 @@ class GPUDBNN:
                     test_accuracy = (test_predictions == y_test.cpu()).float().mean()
 
                 test_time = time.time() - test_start_time
+                print(f"Test completed at {test_start_time+test_time} in {test_time} seconds", end="\r", flush=True)
 
                 # Update epoch progress bar with current metrics
                 epoch_bar.set_postfix({
@@ -3152,8 +3161,9 @@ class GPUDBNN:
             # Calculate test loss only if test_predictions is defined
             if test_predictions is not None:
                 test_loss = (test_predictions != y_test.cpu()).float().mean()
-            else:
-                test_loss = float('inf')  # Set to a default value if no testing was performed
+                test_predictions=None
+            #else:
+                #test_loss = float('inf')  # Set to a default value if no testing was performed
 
             # Store metrics
             train_loss = n_errors / n_samples
