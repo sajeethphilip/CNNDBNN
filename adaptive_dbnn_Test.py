@@ -622,6 +622,7 @@ class BinWeightUpdater:
         self.feature_pairs = feature_pairs
         self.n_bins_per_dim = n_bins_per_dim
         self.device = Train_device
+        Train_device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
         # Initialize histogram_weights as empty dictionary
         self.histogram_weights = {}
