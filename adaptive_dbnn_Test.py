@@ -3305,7 +3305,7 @@ class GPUDBNN:
                     stop_training = True
 
             # Perform testing and update training data if training is stopped
-            if stop_training or (epoch + 1) % 25 == 0 or epoch == self.max_epochs - 1:
+            if  (epoch + 1) % 25 == 0 or epoch == self.max_epochs - 1:
                 # Track testing time
                 test_start_time = time.time()
                 print(f"Entering testing phase at {datetime.fromtimestamp(test_start_time).strftime('%H:%M:%S')} ", end="\r", flush=True)
