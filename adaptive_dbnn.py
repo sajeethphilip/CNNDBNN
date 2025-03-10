@@ -3093,10 +3093,10 @@ class GPUDBNN:
                     stop_training = True
 
             # Perform testing and update training data if training is stopped
-            if stop_training or (epoch + 1) % 5 == 0 or epoch == self.max_epochs - 1:
+            if stop_training or (epoch + 1) % 25 == 0 or epoch == self.max_epochs - 1:
                 # Track testing time
                 test_start_time = time.time()
-                print(f"Entering testing phase at {test_start_time}", end="\r", flush=True)
+                print(f"Entering testing phase at {test_start_time.strftime('%H:%M:%S')} ", end="\r", flush=True)
 
                 # Calculate test accuracy on all remaining test data
                 if hasattr(self, 'test_indices') and self.test_indices:
@@ -3109,7 +3109,7 @@ class GPUDBNN:
                     test_accuracy = (test_predictions == y_test.cpu()).float().mean()
 
                 test_time = time.time() - test_start_time
-                print(f"Test completed at {test_start_time+test_time} in {test_time} seconds", end="\r", flush=True)
+                print(f"Test completed at {(test_start_time+test_time).strftime('%H:%M:%S')}  in {test_time} seconds", end="\r", flush=True)
 
                 # Update epoch progress bar with current metrics
                 epoch_bar.set_postfix({
