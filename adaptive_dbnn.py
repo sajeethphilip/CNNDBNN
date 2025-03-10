@@ -3025,6 +3025,7 @@ class GPUDBNN:
 
         # Initialize test_accuracy to a default value
         test_accuracy = 0.0
+        train_acc =0.0
         print("Training begins", end="\r", flush=True)
         for epoch in epoch_bar:
             # Track training time
@@ -3033,7 +3034,7 @@ class GPUDBNN:
             n_errors = 0
 
             # Update static message for the current epoch
-            update_static_message(f"Epoch {epoch + 1}/{self.max_epochs} | Start Time: {time.strftime('%H:%M:%S')} | Elapsed: {time.time() - start_time:.2f}s")
+            update_static_message(f"Epoch {epoch + 1}/{self.max_epochs} | Start Time: {time.strftime('%H:%M:%S')} | Elapsed: {time.time() - start_time:.2f}s | Test accuracy: {test_accuracy} | Train accuracy {train_acc}")
 
             # Create a tqdm progress bar for training batches
             batch_bar = tqdm(range(0, n_samples, batch_size), desc="Training", unit="batch", leave=False)
