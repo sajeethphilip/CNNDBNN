@@ -932,19 +932,33 @@ class BinWeightUpdater:
 
 #----------------------------------------------DBNN class-------------------------------------------------------------
 class GPUDBNN:
-    """GPU-Optimized Deep Bayesian Neural Network with Parallel Feature Pair Processing"""
-
     def __init__(self, dataset_name: str, learning_rate: float = LearningRate,
                  max_epochs: int = Epochs, test_size: float = TestFraction,
                  random_state: int = TrainingRandomSeed, device: str = None,
                  fresh: bool = False, use_previous_model: bool = True,
                  n_bins_per_dim: int = 20):
-        """Initialize GPUDBNN with support for continued training with fresh data"""
-
+        """Initialize GPUDBNN with support for continued training with fresh data."""
         # Set dataset_name first
         self.dataset_name = dataset_name
-        self.device =  'cuda' if torch.cuda.is_available() else 'cpu'
+
+        # Load configuration
+        self.config = DatasetConfig.load_config(self.dataset_name)
+        if self.config is None:
+            raise ValueError(f"Failed to load configuration for dataset: {self.dataset_name}")
+
+        # Set model type from config
+        self.modelType = self.config.get('training_params', {}).get('modelType', 'Histogram')
+        print(f"[DEBUG] Initialized GPUDBNN with modelType: {self.modelType}")
+
+        # Set device from config
+        self.device = self.config.get('training_params', {}).get('compute_device', 'auto')
+        if self.device == 'auto':
+            self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        print(f"[DEBUG] Using device: {self.device}")
+
+        # Initialize computation cache
         self.computation_cache = ComputationCache(self.device)
+
         # Initialize train/test indices
         self.train_indices = []
         self.test_indices = None
