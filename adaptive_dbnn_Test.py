@@ -2404,7 +2404,7 @@ class GPUDBNN:
 
             # Apply Laplace smoothing and compute probabilities
             smoothed_counts = bin_counts + 1.0
-            bin_probs = smoothed_counts / smoothed_counts.sum(dim=tuple(range(1, len(feature_group) + 1), keepdim=True)
+            bin_probs = smoothed_counts / smoothed_counts.sum(dim=tuple(range(1, len(feature_group) + 1)), keepdim=True)
 
             # Store results
             all_bin_counts.append(smoothed_counts)
