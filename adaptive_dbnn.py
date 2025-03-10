@@ -1720,12 +1720,12 @@ class GPUDBNN:
 
             # Handle model state based on flags
             if self.use_previous_model:
-                print("Loading previous model state")
+                print("Loading previous model state" , end="\r", flush=True)
                 if self._load_model_components():
                     self._load_best_weights()
                     self._load_categorical_encoders()
                     if self.fresh_start:
-                        print("Fresh start with existing model - all data will start in test set")
+                        print("Fresh start with existing model - all data will start in test set" , end="\r", flush=True)
                         train_indices = []
                         test_indices = list(range(len(X)))
                     else:
@@ -1735,13 +1735,13 @@ class GPUDBNN:
                             train_indices = prev_train
                             test_indices = prev_test
                 else:
-                    print("No previous model found - starting fresh")
+                    print("No previous model found - starting fresh" , end="\r", flush=True)
                     self._clean_existing_model()
                     train_indices = []
                     test_indices = list(range(len(X)))
             else:
                 if self.fresh_start:
-                    print("Starting with fresh model")
+                    print("Starting with fresh model" , end="\r", flush=True)
                     self._clean_existing_model()
                     train_indices = []
                     test_indices = list(range(len(X)))
@@ -1753,6 +1753,7 @@ class GPUDBNN:
             # Initialize likelihood parameters if needed
             if self.likelihood_params is None:
                 DEBUG.log(" Initializing likelihood parameters")
+                print(f"Computing pairwise likelihood for {modelType}", end="\r", flush=True)
                 if modelType == "Histogram":
                     self.likelihood_params = self._compute_pairwise_likelihood_parallel(
                         self.X_tensor, self.y_tensor, self.X_tensor.shape[1]
@@ -1761,7 +1762,7 @@ class GPUDBNN:
                     self.likelihood_params = self._compute_pairwise_likelihood_parallel_std(
                         self.X_tensor, self.y_tensor, self.X_tensor.shape[1]
                     )
-                DEBUG.log(" Likelihood parameters computed")
+                DEBUG.log(" Likelihood parameters computed" , end="\r", flush=True)
 
             # Initialize weights if needed
             if self.weight_updater is None:
@@ -1826,7 +1827,9 @@ class GPUDBNN:
                 save_path = f"round_{round_num}_predictions.csv"
                 self.train_indices = train_indices
                 self.test_indices = test_indices
+                print("Initiating fit_predict model", end="\r", flush=True)
                 results = self.fit_predict(batch_size=batch_size, save_path=save_path)
+                print("Completed fit predcit method" , end="\r", flush=True)
 
                 # Check training accuracy
                 train_predictions = self.predict(X_train, batch_size=batch_size)
@@ -3043,19 +3046,14 @@ class GPUDBNN:
 
                 # Compute posteriors for batch
                 if self.config['training_params']['modelType'] == "Histogram":
-                    print("computing batch posterior  for Histogram model", end="\r", flush=True)
                     posteriors, bin_indices = self._compute_batch_posterior(batch_X)
                 elif self.config['training_params']['modelType'] == "Gaussian":
-                    print("computing batch posterior  for Gaussian model", end="\r", flush=True)
                     posteriors, comp_resp = self._compute_batch_posterior_std(batch_X)
 
-                print("Making predictions", end="\r", flush=True)
                 predictions[:current_batch_size] = torch.argmax(posteriors, dim=1)
-                print("Applying mask to find the failed instances             ", end="\r", flush=True)
                 batch_mask[:current_batch_size] = (predictions[:current_batch_size] != batch_y)
 
                 n_errors += batch_mask[:current_batch_size].sum().item()
-                print("Stacking the failed instances                          ", end="\r", flush=True)
                 if batch_mask[:current_batch_size].any():
                     failed_indices = torch.where(batch_mask[:current_batch_size])[0]
                     for idx in failed_indices:
