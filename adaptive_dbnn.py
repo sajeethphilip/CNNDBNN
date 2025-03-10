@@ -1659,7 +1659,7 @@ class GPUDBNN:
 
     def adaptive_fit_predict(self, max_rounds: int = 10, improvement_threshold: float = 0.001, batch_size: int = 32):
         """
-        Modified adaptive training strategy with preprocessing done once.
+        Modified adaptive training strategy with preprocessing done once and confusion matrix display.
         """
         if not EnableAdaptive:
             print("Adaptive learning is disabled. Using standard training.")
@@ -1704,6 +1704,13 @@ class GPUDBNN:
                 # Evaluate test data
                 test_predictions = self.predict(self.X_tensor[test_indices], batch_size=batch_size)
                 test_accuracy = (test_predictions == self.y_tensor[test_indices]).float().mean()
+
+                # Display confusion matrix
+                print(f"\n{Colors.BOLD}{Colors.BLUE}Confusion Matrix - Round {round_num + 1}{Colors.ENDC}")
+                self.print_colored_confusion_matrix(
+                    self.y_tensor[test_indices].cpu().numpy(),
+                    test_predictions.cpu().numpy()
+                )
 
                 # Select new samples for training
                 new_train_indices = self._select_samples_from_failed_classes(
