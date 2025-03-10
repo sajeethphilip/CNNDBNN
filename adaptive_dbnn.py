@@ -2751,19 +2751,7 @@ class GPUDBNN:
         color = Colors.GREEN if overall_acc >= 0.9 else Colors.YELLOW if overall_acc >= 0.7 else Colors.RED
         print(f"{Colors.BOLD}Overall Accuracy: {color}{overall_acc:.2%}{Colors.ENDC}")
 
-    def adaptive_learning_rate_decay(initial_lr, epoch, decay_rate=0.95, min_lr=LearningRate):
-        """
-        Exponential decay for learning rate.
-        Args:
-            initial_lr: Initial learning rate.
-            epoch: Current epoch.
-            decay_rate: Rate of decay (default: 0.95).
-            min_lr: Minimum learning rate (default: LearningRate).
-        Returns:
-            Adjusted learning rate.
-        """
-        lr = initial_lr * (decay_rate ** epoch)
-        return max(lr, min_lr)
+
 
     def train(self, X_train: torch.Tensor, y_train: torch.Tensor, X_test: torch.Tensor, y_test: torch.Tensor, batch_size: int = 32):
         """
@@ -3842,7 +3830,19 @@ def plot_confusion_matrix(confusion_mat: np.ndarray, class_names: np.ndarray, da
     plt.xlabel('Predicted Label')
     plt.show()
 
-
+def adaptive_learning_rate_decay(initial_lr, epoch, decay_rate=0.95, min_lr=LearningRate):
+    """
+    Exponential decay for learning rate.
+    Args:
+        initial_lr: Initial learning rate.
+        epoch: Current epoch.
+        decay_rate: Rate of decay (default: 0.95).
+        min_lr: Minimum learning rate (default: LearningRate).
+    Returns:
+        Adjusted learning rate.
+    """
+    lr = initial_lr * (decay_rate ** epoch)
+    return max(lr, min_lr)
 
 
 def generate_test_datasets():
