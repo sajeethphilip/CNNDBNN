@@ -3156,6 +3156,7 @@ class GPUDBNN:
             if failed_cases:
                 print("Updating the priors for the failed examples" , end="\r", flush=True)
                 self._update_priors_parallel(failed_cases, batch_size)
+                failed_cases=None
                 print("Completed updating the priors                      " , end="\r", flush=True)
 
             # Calculate test loss only if test_predictions is defined
@@ -3167,8 +3168,10 @@ class GPUDBNN:
 
             # Store metrics
             train_loss = n_errors / n_samples
+            print("Checking predictions on training  data"  , end="\r", flush=True)
             train_pred = self.predict(X_train, batch_size)
             train_acc = (train_pred == y_train.cpu()).float().mean()
+            print(f"Estimated training accuracy as {train_acc}"  , end="\r", flush=True)
 
             # Store metrics
             train_losses.append(train_loss)
