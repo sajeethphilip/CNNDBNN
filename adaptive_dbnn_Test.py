@@ -2395,7 +2395,7 @@ class GPUDBNN:
 
                     # Compute bin indices for each feature in the group
                     group_bin_indices = torch.stack([
-                        torch.bucketize(class_data[:, dim], all_bin_edges[group_idx][dim]) - 1
+                        torch.bucketize(class_data[:, dim].contiguous(), all_bin_edges[group_idx][dim]) - 1
                         for dim in range(len(feature_group))
                     ]).clamp_(0, bin_shape[1] - 1)
 
