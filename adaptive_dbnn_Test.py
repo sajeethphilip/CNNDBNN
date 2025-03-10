@@ -4026,7 +4026,7 @@ class GPUDBNN:
 
     def _get_model_components_filename(self):
         """Get filename for model components"""
-        return os.path.join('Model', f'Best{modelType}_{self.dataset_name}_components.pkl')
+        return os.path.join('Model', f'Best{self.modelType}_{self.dataset_name}_components.pkl')
 #----------------Handling categorical variables across sessions -------------------------
     def _save_categorical_encoders(self):
         """Save categorical feature encoders"""
