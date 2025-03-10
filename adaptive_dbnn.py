@@ -1686,6 +1686,9 @@ class GPUDBNN:
             self.X_tensor = X_tensor
             self.y_tensor = y_tensor
 
+            # Compute and store feature bounds
+            self._compute_feature_bounds(X_tensor)
+
             # Initialize train/test indices
             train_indices = []
             test_indices = list(range(len(X)))
@@ -2035,6 +2038,11 @@ class GPUDBNN:
             'feature_pairs': self.feature_pairs,
             'classes': unique_classes
         }
+
+    def _compute_feature_bounds(self, dataset: torch.Tensor):
+        """Compute and store the min and max values for each feature dimension."""
+        self.dim_min = dataset.min(dim=0).values
+        self.dim_max = dataset.max(dim=0).values
 
     def _compute_pairwise_likelihood_parallel_old(self, dataset: torch.Tensor, labels: torch.Tensor, feature_dims: int):
         """Optimized non-parametric likelihood computation with configurable bin sizes"""
@@ -2412,7 +2420,7 @@ class GPUDBNN:
         self.current_W.clamp_(min=1e-10)
 
     def _compute_custom_bin_edges(self, data: torch.Tensor, bin_sizes: List[int]) -> List[torch.Tensor]:
-        """Compute bin edges based on custom bin sizes."""
+        """Compute bin edges based on custom bin sizes using precomputed min/max values."""
         n_dims = data.shape[1]
         bin_edges = []
 
@@ -2424,13 +2432,12 @@ class GPUDBNN:
         if len(bin_sizes) < n_dims:
             raise ValueError(f"Not enough bin sizes provided. Need {n_dims}, got {len(bin_sizes)}")
 
-        # Compute bin edges for each dimension
+        # Compute bin edges for each dimension using precomputed min/max
         for dim in range(n_dims):
-            dim_data = data[:, dim]
-            dim_min, dim_max = dim_data.min(), dim_data.max()
+            dim_min = self.dim_min[dim].item()
+            dim_max = self.dim_max[dim].item()
             padding = (dim_max - dim_min) * 0.01  # Add 1% padding
 
-            # Create edges based on specified bin size
             edges = torch.linspace(
                 dim_min - padding,
                 dim_max + padding,
@@ -3661,19 +3668,20 @@ class GPUDBNN:
             'target_column': self.target_column,
             'target_classes': self.label_encoder.classes_,
             'target_mapping': dict(zip(self.label_encoder.classes_,
-                                     range(len(self.label_encoder.classes_)))),
+                                     range(len(self.label_encoder.classes_))),
             'config': self.config,
             'high_cardinality_columns': getattr(self, 'high_cardinality_columns', []),
             'original_columns': getattr(self, 'original_columns', None),
             'best_error': self.best_error,  # Explicitly save best error
             'last_training_loss': getattr(self, 'last_training_loss', float('inf')),
             'weight_updater': self.weight_updater,
-            'n_bins_per_dim': self.n_bins_per_dim
+            'n_bins_per_dim': self.n_bins_per_dim,
+            'dim_min': self.dim_min,
+            'dim_max': self.dim_max
         }
 
         # Get the filename using existing method
         components_file = self._get_model_components_filename()
-
 
         # Ensure directory exists
         os.makedirs(os.path.dirname(components_file), exist_ok=True)
@@ -3685,6 +3693,27 @@ class GPUDBNN:
         print(f"Saved model components to {components_file}")
         return True
 
+    def _load_model_components(self):
+        """Load all model components"""
+        components_file = self._get_model_components_filename()
+        if os.path.exists(components_file):
+            with open(components_file, 'rb') as f:
+                components = pickle.load(f)
+                self.label_encoder.classes_ = components['target_classes']
+                self.scaler = components['scaler']
+                self.label_encoder = components['label_encoder']
+                self.likelihood_params = components['likelihood_params']
+                self.feature_pairs = components['feature_pairs']
+                self.feature_columns = components.get('feature_columns')
+                self.categorical_encoders = components['categorical_encoders']
+                self.high_cardinality_columns = components.get('high_cardinality_columns', [])
+                self.weight_updater = components.get('weight_updater')
+                self.n_bins_per_dim = components.get('n_bins_per_dim', 20)
+                self.dim_min = components.get('dim_min')
+                self.dim_max = components.get('dim_max')
+                print(f"Loaded model components from {components_file}")
+                return True
+        return False
 
 
     def _load_model_components(self):
