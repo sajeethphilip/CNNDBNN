@@ -2055,9 +2055,13 @@ def main(args=None):
                     with open(config_path, 'r') as f:
                         config = json.load(f)
                 else:
+                    print("Setting up DataProcessor", end="\r", flush=True)
                     processor = DatasetProcessor(datafile=datafile, datatype=datatype)
+                    print("Preparing train and test folders", end="\r", flush=True)
                     train_dir, test_dir = processor.process()
+                    print(f"train folder is set as {train_dir} and test folder as {test_dir}", end="\r", flush=True)
                     processor.generate_json(train_dir, test_dir)
+                    print("Generated json file and saving it", end="\r", flush=True)
                     with open(config_path, 'r') as f:
                         config = json.load(f)
             else:
