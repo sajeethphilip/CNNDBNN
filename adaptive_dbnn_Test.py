@@ -2301,7 +2301,16 @@ class GPUDBNN:
         # Apply scaling using stored scalers
         X_processed = []
         for group, scaler in zip(self.data_preprocessor.feature_groups, self.data_preprocessor.scalers):
+            # Ensure group is a list of column indices
+            if isinstance(group, (tuple, list)):
+                group = list(group)  # Convert tuple to list if necessary
+            else:
+                group = [group]  # Convert single index to list
+
+            # Extract group data
             group_data = X.iloc[:, group].values
+
+            # Apply scaling
             scaled_data = scaler.transform(group_data)
             X_processed.append(scaled_data)
 
