@@ -2939,6 +2939,8 @@ class GPUDBNN:
         """
         # Ensure the output directory exists
         os.makedirs(self.training_save_path, exist_ok=True)
+        # Initialize learning rate
+        initial_lr = self.learning_rate
 
         # Define the log file path
         log_file_path = os.path.join(self.training_save_path, f"{self.dataset_name}_training_log.csv")
@@ -3033,6 +3035,7 @@ class GPUDBNN:
             train_start_time = time.time()
             failed_cases = []
             n_errors = 0
+            self.learning_rate = adaptive_learning_rate_decay(initial_lr, epoch)
 
             # Update static message for the current epoch
             update_static_message(f"Epoch {epoch + 1}/{self.max_epochs} | Start Time: {time.strftime('%H:%M:%S')} | Elapsed: {time.time() - start_time:.2f}s | Test accuracy: {test_accuracy} | Train accuracy {train_acc}")
