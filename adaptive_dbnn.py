@@ -98,6 +98,122 @@ import json
 import requests
 from typing import Dict
 
+# Add new class for data preprocessing and storage
+class DataPreprocessor:
+    def __init__(self, config, device):
+        self.config = config
+        self.device = device
+        self.feature_groups = None
+        self.bin_edges = None
+        self.scalers = None
+        self.feature_bounds = None
+        self.n_bins_per_dim = config.get('likelihood_config', {}).get('bin_sizes', [20])[0]
+
+    def preprocess_and_store(self, X: np.ndarray, y: np.ndarray):
+        """Preprocess data and store all necessary information."""
+        # Feature grouping
+        self.feature_groups = self._generate_feature_groups(X)
+
+        # Compute bin edges and scaling parameters
+        self.bin_edges, self.scalers = self._compute_bin_edges_and_scalers(X)
+
+        # Store feature bounds
+        self.feature_bounds = self._compute_feature_bounds(X)
+
+        # Save preprocessing information
+        self._save_preprocessing_info()
+
+    def _generate_feature_groups(self, X):
+        """Generate feature groups based on configuration"""
+        feature_group_size = self.config.get('likelihood_config', {}).get('feature_group_size', 2)
+        max_combinations = self.config.get('likelihood_config', {}).get('max_combinations', None)
+
+        n_features = X.shape[1]
+        all_combinations = list(combinations(range(n_features), feature_group_size))
+
+        if max_combinations and len(all_combinations) > max_combinations:
+            rng = np.random.RandomState(42)
+            indices = rng.choice(len(all_combinations), max_combinations, replace=False)
+            return [all_combinations[i] for i in indices]
+
+        return all_combinations
+
+    def _compute_bin_edges_and_scalers(self, X: np.ndarray) -> Tuple[List[List[torch.Tensor]], List[StandardScaler]]:
+        """Compute bin edges and scalers for each feature group."""
+        bin_edges = []
+        scalers = []
+
+        for group in self.feature_groups:
+            group_data = X[:, group]
+
+            # Compute bin edges for this group
+            edges = []
+            for i in range(len(group)):
+                min_val = group_data[:, i].min()
+                max_val = group_data[:, i].max()
+                padding = (max_val - min_val) * 0.01
+                edges.append(torch.linspace(min_val - padding, max_val + padding, self.n_bins_per_dim + 1))
+
+            bin_edges.append(edges)
+
+            # Create and fit scaler for this group
+            scaler = StandardScaler()
+            scaler.fit(group_data)
+            scalers.append(scaler)
+
+        return bin_edges, scalers
+
+    def _compute_feature_bounds(self, X: np.ndarray) -> Dict[int, Dict[str, float]]:
+        """Compute global feature bounds."""
+        bounds = {}
+        for i in range(X.shape[1]):
+            min_val = X[:, i].min()
+            max_val = X[:, i].max()
+            padding = (max_val - min_val) * 0.01
+            bounds[i] = {
+                'min': min_val - padding,
+                'max': max_val + padding
+            }
+        return bounds
+
+    def _save_preprocessing_info(self):
+        """Save preprocessing information to file."""
+        preprocessing_info = {
+            'feature_groups': self.feature_groups,
+            'bin_edges': [
+                [edge.tolist() if hasattr(edge, 'tolist') else edge for edge in group]
+                for group in self.bin_edges
+            ],
+            'scalers': [s.__getstate__() for s in self.scalers],
+            'feature_bounds': self.feature_bounds,
+            'n_bins_per_dim': self.n_bins_per_dim
+        }
+
+        with open('preprocessing_info.pkl', 'wb') as f:
+            pickle.dump(preprocessing_info, f)
+
+    def load_preprocessing_info(self):
+        """Load preprocessing information from file"""
+        if not os.path.exists('preprocessing_info.pkl'):
+            return False
+
+        with open('preprocessing_info.pkl', 'rb') as f:
+            preprocessing_info = pickle.load(f)
+
+        self.feature_groups = preprocessing_info['feature_groups']
+        self.bin_edges = [torch.tensor(be) for be in preprocessing_info['bin_edges']]
+
+        self.scalers = []
+        for state in preprocessing_info['scalers']:
+            scaler = StandardScaler()
+            scaler.__setstate__(state)
+            self.scalers.append(scaler)
+
+        self.feature_bounds = preprocessing_info['feature_bounds']
+        self.n_bins_per_dim = preprocessing_info['n_bins_per_dim']
+
+        return True
+
 class DatasetConfig:
     """Enhanced dataset configuration handling with support for column names, URLs, and epoch logging"""
 
@@ -507,6 +623,7 @@ class BinWeightUpdater:
         self.n_bins_per_dim = n_bins_per_dim
         self.device = Train_device
 
+
         # Initialize histogram_weights as empty dictionary
         self.histogram_weights = {}
 
@@ -815,19 +932,33 @@ class BinWeightUpdater:
 
 #----------------------------------------------DBNN class-------------------------------------------------------------
 class GPUDBNN:
-    """GPU-Optimized Deep Bayesian Neural Network with Parallel Feature Pair Processing"""
-
     def __init__(self, dataset_name: str, learning_rate: float = LearningRate,
                  max_epochs: int = Epochs, test_size: float = TestFraction,
                  random_state: int = TrainingRandomSeed, device: str = None,
                  fresh: bool = False, use_previous_model: bool = True,
                  n_bins_per_dim: int = 20):
-        """Initialize GPUDBNN with support for continued training with fresh data"""
-
+        """Initialize GPUDBNN with support for continued training with fresh data."""
         # Set dataset_name first
         self.dataset_name = dataset_name
-        self.device = Train_device
+
+        # Load configuration
+        self.config = DatasetConfig.load_config(self.dataset_name)
+        if self.config is None:
+            raise ValueError(f"Failed to load configuration for dataset: {self.dataset_name}")
+
+        # Set model type from config
+        self.modelType = self.config.get('training_params', {}).get('modelType', 'Histogram')
+        print(f"[DEBUG] Initialized GPUDBNN with modelType: {self.modelType}")
+
+        # Set device from config
+        self.device = self.config.get('training_params', {}).get('compute_device', 'auto')
+        if self.device == 'auto':
+            self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        print(f"[DEBUG] Using device: {self.device}")
+
+        # Initialize computation cache
         self.computation_cache = ComputationCache(self.device)
+
         # Initialize train/test indices
         self.train_indices = []
         self.test_indices = None
@@ -897,7 +1028,13 @@ class GPUDBNN:
         else:
             # Complete fresh start
             self._clean_existing_model()
+        # Initialize data preprocessor
+        self.data_preprocessor = DataPreprocessor(self.config, self.device)
 
+        # Load preprocessing info if available
+        if not fresh and use_previous_model:
+            if not self.data_preprocessor.load_preprocessing_info():
+                print("No preprocessing info found, will create new")
 
         #------------------------------------------Adaptive Learning--------------------------------------
         super().__init__()
@@ -1087,7 +1224,7 @@ class GPUDBNN:
 
     def _load_dataset(self) -> pd.DataFrame:
         """Load and preprocess dataset from the data/<dataset_name>/ folder."""
-        DEBUG.log(f" Loading dataset from config: {self.config}")
+        DEBUG.log(f"Loading dataset from config: {self.config}")
         try:
             file_path = self.config.get('file_path')
             if file_path is None:
@@ -1095,12 +1232,12 @@ class GPUDBNN:
 
             # Handle URL or local file
             if file_path.startswith(('http://', 'https://')):
-                DEBUG.log(f" Loading from URL: {file_path}")
+                DEBUG.log(f"Loading from URL: {file_path}")
                 response = requests.get(file_path)
                 response.raise_for_status()
                 data = StringIO(response.text)
             else:
-                DEBUG.log(f" Loading from local file: {file_path}")
+                DEBUG.log(f"Loading from local file: {file_path}")
                 if not os.path.exists(file_path):
                     raise FileNotFoundError(f"Dataset file not found: {file_path}")
                 data = file_path
@@ -1116,14 +1253,14 @@ class GPUDBNN:
             if df is None or df.empty:
                 raise ValueError(f"Empty dataset loaded from {file_path}")
 
-            DEBUG.log(f" Loaded DataFrame shape: {df.shape}")
-            DEBUG.log(f" Original DataFrame columns: {df.columns.tolist()}")
+            DEBUG.log(f"Loaded DataFrame shape: {df.shape}")
+            DEBUG.log(f"Original DataFrame columns: {df.columns.tolist()}")
 
             # Filter features based on config after reading the actual data
             if 'column_names' in self.config:
-                DEBUG.log(" Filtering features based on config")
+                DEBUG.log("Filtering features based on config")
                 df = _filter_features_from_config(df, self.config)
-                DEBUG.log(f" Shape after filtering: {df.shape}")
+                DEBUG.log(f"Shape after filtering: {df.shape}")
 
             # Handle target column
             target_column = self.config.get('target_column')
@@ -1136,21 +1273,36 @@ class GPUDBNN:
                     raise ValueError(f"Target column index {target_column} is out of range")
                 target_column = cols[target_column]
                 self.config['target_column'] = target_column
-                DEBUG.log(f" Using target column: {target_column}")
+                DEBUG.log(f"Using target column: {target_column}")
 
             if target_column not in df.columns:
                 raise ValueError(f"Target column '{target_column}' not found in dataset")
 
-            DEBUG.log(f" Dataset loaded successfully. Shape: {df.shape}")
-            DEBUG.log(f" Columns: {df.columns.tolist()}")
-            DEBUG.log(f" Data types:\n{df.dtypes}")
+            DEBUG.log(f"Dataset loaded successfully. Shape: {df.shape}")
+            DEBUG.log(f"Columns: {df.columns.tolist()}")
+            DEBUG.log(f"Data types:\n{df.dtypes}")
+
+            # Set self.data after loading the dataset
+            self.data = df
+
+            # After loading data, preprocess and store information if needed
+            if not hasattr(self, 'preprocessing_done') or self.fresh_start:
+                # Ensure we use the full dataset (df) for preprocessing
+                X = df.drop(columns=[self.target_column])
+                y = df[self.target_column]
+
+                # Preprocess and store all necessary information
+                X_processed = self._preprocess_data(X, is_training=True)
+                self.data_preprocessor.preprocess_and_store(X_processed, y)
+                self.preprocessing_done = True
 
             return df
 
         except Exception as e:
-            DEBUG.log(f" Error loading dataset: {str(e)}")
-            DEBUG.log(" Stack trace:", traceback.format_exc())
+            DEBUG.log(f"Error loading dataset: {str(e)}")
+            DEBUG.log("Stack trace:", traceback.format_exc())
             raise RuntimeError(f"Failed to load dataset: {str(e)}")
+
 
     def _compute_batch_posterior(self, features: torch.Tensor, epsilon: float = 1e-10):
         batch_size = features.shape[0]
@@ -1267,7 +1419,7 @@ class GPUDBNN:
         posteriors = torch.exp(log_likelihoods - max_log_likelihood)
         posteriors /= posteriors.sum(dim=1, keepdim=True) + epsilon
 
-        return posteriors, bin_indices_dict if modelType == "Histogram" else None
+        return posteriors, bin_indices_dict if self.modelType == "Histogram" else None
 #----------------------
 
     def set_feature_bounds(self, dataset):
@@ -1323,9 +1475,9 @@ class GPUDBNN:
 
         # Save indices
         try:
-            with open(os.path.join(epoch_dir, f'{modelType}_train_indices.pkl'), 'wb') as f:
+            with open(os.path.join(epoch_dir, f'{self.modelType}_train_indices.pkl'), 'wb') as f:
                 pickle.dump(train_indices, f)
-            with open(os.path.join(epoch_dir, f'{modelType}_test_indices.pkl'), 'wb') as f:
+            with open(os.path.join(epoch_dir, f'{self.modelType}_test_indices.pkl'), 'wb') as f:
                 pickle.dump(test_indices, f)
             print(f"Saved epoch {epoch} data to {epoch_dir}")
         except Exception as e:
@@ -1337,9 +1489,9 @@ class GPUDBNN:
         """
         epoch_dir = os.path.join(self.base_save_path, f'epoch_{epoch}')
 
-        with open(os.path.join(epoch_dir, f'{modelType}_train_indices.pkl'), 'rb') as f:
+        with open(os.path.join(epoch_dir, f'{self.modelType}_train_indices.pkl'), 'rb') as f:
             train_indices = pickle.load(f)
-        with open(os.path.join(epoch_dir, f'{modelType}_test_indices.pkl'), 'rb') as f:
+        with open(os.path.join(epoch_dir, f'{self.modelType}_test_indices.pkl'), 'rb') as f:
             test_indices = pickle.load(f)
 
         return train_indices, test_indices
@@ -1535,7 +1687,7 @@ class GPUDBNN:
                 batch_samples = self.X_tensor[test_indices[batch_indices]]
 
                 # Compute probabilities for batch
-                if modelType == "Histogram":
+                if self.modelType == "Histogram":
                     probs, _ = self._compute_batch_posterior(batch_samples)
                 else:
                     probs, _ = self._compute_batch_posterior_std(batch_samples)
@@ -1754,16 +1906,16 @@ class GPUDBNN:
             # Initialize likelihood parameters if needed
             if self.likelihood_params is None:
                 DEBUG.log(" Initializing likelihood parameters")
-                print(f"Computing pairwise likelihood for {modelType}", end="\r", flush=True)
-                if modelType == "Histogram":
+                print(f"Computing pairwise likelihood for {self.modelType}", end="\r", flush=True)
+                if self.modelType == "Histogram":
                     self.likelihood_params = self._compute_pairwise_likelihood_parallel(
                         self.X_tensor, self.y_tensor, self.X_tensor.shape[1]
                     )
-                elif modelType == "Gaussian":
+                elif self.modelType == "Gaussian":
                     self.likelihood_params = self._compute_pairwise_likelihood_parallel_std(
                         self.X_tensor, self.y_tensor, self.X_tensor.shape[1]
                     )
-                DEBUG.log(" Likelihood parameters computed" , end="\r", flush=True)
+                print(" Likelihood parameters computed" , end="\r", flush=True)
 
             # Initialize weights if needed
             if self.weight_updater is None:
@@ -1923,10 +2075,22 @@ class GPUDBNN:
     #------------------------------------------Adaptive Learning--------------------------------------
 
 
-    def _calculate_cardinality_threshold(self):
-        """Calculate appropriate cardinality threshold based on dataset characteristics"""
-        n_samples = len(self.data)
-        n_classes = len(self.data[self.target_column].unique())
+    def _calculate_cardinality_threshold(self, data: pd.DataFrame = None):
+        """Calculate appropriate cardinality threshold based on dataset characteristics."""
+        if data is None:
+            if not hasattr(self, 'data'):
+                raise ValueError("Dataset not loaded. Call _load_dataset first.")
+            data = self.data
+
+        # Validate that the target column exists
+        if self.target_column not in data.columns:
+            raise ValueError(
+                f"Target column '{self.target_column}' not found in dataset. "
+                f"Available columns: {data.columns.tolist()}"
+            )
+
+        n_samples = len(data)
+        n_classes = len(data[self.target_column].unique())
 
         # Base threshold from config
         base_threshold = cardinality_threshold
@@ -2029,37 +2193,51 @@ class GPUDBNN:
         DEBUG.log(f" Detected categorical columns: {categorical_columns}")
         return categorical_columns
 
-    def _preprocess_data(self, X: pd.DataFrame, is_training: bool = True) -> torch.Tensor:
-        """Preprocess data with improved error handling and debugging"""
-        print(f"\n[DEBUG] ====== Starting preprocessing ======")
-        DEBUG.log(f" Input shape: {X.shape}")
-        DEBUG.log(f" Input columns: {X.columns.tolist()}")
-        DEBUG.log(f" Input dtypes:\n{X.dtypes}")
+    def _preprocess_data(self, X: pd.DataFrame, is_training: bool = True) -> np.ndarray:
+        """Preprocess data using stored preprocessing information or perform full preprocessing."""
+        DEBUG.log(f"Starting preprocessing for {'training' if is_training else 'prediction'}")
 
-        # Make a copy to avoid modifying original data
+        if is_training or not self.data_preprocessor.load_preprocessing_info():
+            # Perform full preprocessing if in training mode or no preprocessing info is available
+            DEBUG.log("Performing full preprocessing")
+            X_processed = self._full_preprocessing(X, is_training)
+        else:
+            # Apply stored preprocessing information
+            DEBUG.log("Applying stored preprocessing information")
+            X_processed = self._apply_stored_preprocessing(X)
+
+        DEBUG.log(f"Preprocessing complete. Final shape: {X_processed.shape}")
+        return X_processed
+
+    def _full_preprocessing(self, X: pd.DataFrame, is_training: bool = True) -> np.ndarray:
+        """Perform full preprocessing including feature selection, scaling, and categorical encoding."""
+        DEBUG.log("Starting full preprocessing")
+
+        # Make a copy to avoid modifying the original data
         X = X.copy()
 
-        # Calculate cardinality threshold
-        cardinality_threshold = self._calculate_cardinality_threshold()
-        DEBUG.log(f" Cardinality threshold: {cardinality_threshold}")
+        # Calculate cardinality threshold using the provided data
+        cardinality_threshold = self._calculate_cardinality_threshold(data=self.data)
+        DEBUG.log(f"Cardinality threshold: {cardinality_threshold}")
 
+        # Rest of the preprocessing logic remains the same
         if is_training:
-            DEBUG.log(" Training mode preprocessing")
+            DEBUG.log("Training mode preprocessing")
             self.original_columns = X.columns.tolist()
 
             # Remove high cardinality columns
             X = self._remove_high_cardinality_columns(X, cardinality_threshold)
-            DEBUG.log(f" Shape after cardinality filtering: {X.shape}")
+            DEBUG.log(f"Shape after cardinality filtering: {X.shape}")
 
             self.feature_columns = X.columns.tolist()
-            DEBUG.log(f" Selected feature columns: {self.feature_columns}")
+            DEBUG.log(f"Selected feature columns: {self.feature_columns}")
 
             # Store high cardinality columns
             self.high_cardinality_columns = list(set(self.original_columns) - set(self.feature_columns))
             if self.high_cardinality_columns:
-                DEBUG.log(f" Removed high cardinality columns: {self.high_cardinality_columns}")
+                DEBUG.log(f"Removed high cardinality columns: {self.high_cardinality_columns}")
         else:
-            DEBUG.log(" Prediction mode preprocessing")
+            DEBUG.log("Prediction mode preprocessing")
             if not hasattr(self, 'feature_columns'):
                 raise ValueError("Model not trained - feature columns not found")
 
@@ -2073,23 +2251,23 @@ class GPUDBNN:
             X = X[self.feature_columns]
 
         # Handle categorical features
-        DEBUG.log(" Starting categorical encoding")
+        DEBUG.log("Starting categorical encoding")
         try:
             X_encoded = self._encode_categorical_features(X, is_training)
-            DEBUG.log(f" Shape after categorical encoding: {X_encoded.shape}")
-            DEBUG.log(f" Encoded dtypes:\n{X_encoded.dtypes}")
+            DEBUG.log(f"Shape after categorical encoding: {X_encoded.shape}")
+            DEBUG.log(f"Encoded dtypes:\n{X_encoded.dtypes}")
         except Exception as e:
-            DEBUG.log(f" Error in categorical encoding: {str(e)}")
+            DEBUG.log(f"Error in categorical encoding: {str(e)}")
             raise
 
         # Convert to numpy and check for issues
         try:
             X_numpy = X_encoded.to_numpy()
-            DEBUG.log(f" Numpy array shape: {X_numpy.shape}")
-            DEBUG.log(f" Any NaN: {np.isnan(X_numpy).any()}")
-            DEBUG.log(f" Any Inf: {np.isinf(X_numpy).any()}")
+            DEBUG.log(f"Numpy array shape: {X_numpy.shape}")
+            DEBUG.log(f"Any NaN: {np.isnan(X_numpy).any()}")
+            DEBUG.log(f"Any Inf: {np.isinf(X_numpy).any()}")
         except Exception as e:
-            DEBUG.log(f" Error converting to numpy: {str(e)}")
+            DEBUG.log(f"Error converting to numpy: {str(e)}")
             raise
 
         # Scale the features
@@ -2099,7 +2277,7 @@ class GPUDBNN:
             else:
                 X_scaled = self.scaler.transform(X_numpy)
         except Exception as e:
-            DEBUG.log(f" Standard scaling failed: {str(e)}. Using manual scaling")
+            DEBUG.log(f"Standard scaling failed: {str(e)}. Using manual scaling")
             if X_numpy.size == 0:
                 print("[WARNING] Empty feature array! Returning original data")
                 X_scaled = X_numpy
@@ -2109,8 +2287,38 @@ class GPUDBNN:
                 stds[stds == 0] = 1
                 X_scaled = (X_numpy - means) / stds
 
-        DEBUG.log(f" Final preprocessed shape: {X_scaled.shape}")
-        return torch.FloatTensor(X_scaled)
+        DEBUG.log(f"Final preprocessed shape: {X_scaled.shape}")
+        return X_scaled
+
+    def _apply_stored_preprocessing(self, X: pd.DataFrame) -> np.ndarray:
+        """Apply stored preprocessing information to new data."""
+        DEBUG.log("Applying stored preprocessing information")
+
+        # Apply feature selection
+        if hasattr(self, 'feature_columns'):
+            X = X[self.feature_columns]
+
+        # Apply scaling using stored scalers
+        X_processed = []
+        for group, scaler in zip(self.data_preprocessor.feature_groups, self.data_preprocessor.scalers):
+            # Ensure group is a list of column indices
+            if isinstance(group, (tuple, list)):
+                group = list(group)  # Convert tuple to list if necessary
+            else:
+                group = [group]  # Convert single index to list
+
+            # Extract group data
+            group_data = X.iloc[:, group].values
+
+            # Apply scaling
+            scaled_data = scaler.transform(group_data)
+            X_processed.append(scaled_data)
+
+        # Stack all feature groups into a single array
+        X_processed = np.hstack(X_processed)
+
+        DEBUG.log(f"Final preprocessed shape: {X_processed.shape}")
+        return X_processed
 
     def _generate_feature_combinations(self, n_features: int, group_size: int, max_combinations: int = None) -> torch.Tensor:
         """Generate and save/load consistent feature combinations."""
@@ -2156,40 +2364,33 @@ class GPUDBNN:
         return combinations_tensor
 #-----------------------------------------------------------------------------Bin model ---------------------------
     def _compute_pairwise_likelihood_parallel(self, dataset: torch.Tensor, labels: torch.Tensor, feature_dims: int):
-        dataset = torch.as_tensor(dataset, device=self.device).contiguous()
-        labels = torch.as_tensor(labels, device=self.device).contiguous()
+        """Compute pairwise likelihood using stored bin edges and feature groups."""
+        if self.data_preprocessor.feature_groups is None:
+            raise ValueError("Feature groups not initialized")
 
+        # Use stored feature groups
+        self.feature_pairs = self.data_preprocessor.feature_groups
+
+        # Use stored bin edges
+        all_bin_edges = self.data_preprocessor.bin_edges
+
+        # Ensure all_bin_edges are on the correct device
+        all_bin_edges = [[edge.to(self.device) for edge in group] for group in all_bin_edges]
+
+        # Rest of the likelihood computation remains the same
         unique_classes, class_counts = torch.unique(labels, return_counts=True)
         n_classes = len(unique_classes)
 
-        # Get bin sizes from config
-        bin_sizes = self.config.get('likelihood_config', {}).get('bin_sizes', [20])
-
-        # Get feature group size from config
-        feature_group_size = self.config.get('likelihood_config', {}).get('feature_group_size', 2)
-
-        # Generate feature combinations
-        self.feature_pairs = self._generate_feature_combinations(
-            feature_dims,
-            feature_group_size,
-            self.config.get('likelihood_config', {}).get('max_combinations', None)
-        )
-
         # Pre-allocate storage arrays
-        all_bin_edges = []
         all_bin_counts = []
         all_bin_probs = []
 
         # Process each feature group
-        for feature_group in self.feature_pairs:
-            feature_group = [int(x) for x in feature_group]
+        for group_idx, feature_group in enumerate(self.feature_pairs):
             group_data = dataset[:, feature_group].contiguous()
 
-            # Use custom binning
-            bin_edges = self._compute_custom_bin_edges(group_data, bin_sizes)
-
             # Initialize bin counts
-            bin_shape = [n_classes] + [len(edges) - 1 for edges in bin_edges]
+            bin_shape = [n_classes] + [len(edges) - 1 for edges in all_bin_edges[group_idx]]
             bin_counts = torch.zeros(bin_shape, device=self.device, dtype=torch.float32)
 
             # Process each class
@@ -2198,21 +2399,25 @@ class GPUDBNN:
                 if class_mask.any():
                     class_data = group_data[class_mask]
 
-                    # Compute bin indices for all dimensions in the feature group
-                    bin_indices = torch.stack([
-                        torch.bucketize(class_data[:, dim], bin_edges[dim]) - 1
-                        for dim in range(feature_group_size)
-                    ]).clamp_(0, bin_shape[1] - 1)  # Shape: [feature_group_size, batch_size]
+                    # Ensure class_data is on the correct device
+                    class_data = class_data.to(self.device)
+
+                    # Compute bin indices for each feature in the group
+                    group_bin_indices = torch.stack([
+                        torch.bucketize(class_data[:, dim].contiguous(), all_bin_edges[group_idx][dim]) - 1
+                        for dim in range(len(feature_group))
+                    ]).clamp_(0, bin_shape[1] - 1)
 
                     # Update bin counts using advanced indexing
-                    bin_counts[class_idx, bin_indices[0], bin_indices[1], ...] += 1
+                    # Convert group_bin_indices to a tuple of tensors for each dimension
+                    indices = tuple(group_bin_indices[dim] for dim in range(len(feature_group)))
+                    bin_counts[class_idx][indices] += 1
 
             # Apply Laplace smoothing and compute probabilities
             smoothed_counts = bin_counts + 1.0
-            bin_probs = smoothed_counts / smoothed_counts.sum(dim=tuple(range(1, feature_group_size + 1)), keepdim=True)
+            bin_probs = smoothed_counts / smoothed_counts.sum(dim=tuple(range(1, len(feature_group) + 1)), keepdim=True)
 
             # Store results
-            all_bin_edges.append(bin_edges)
             all_bin_counts.append(smoothed_counts)
             all_bin_probs.append(bin_probs)
 
@@ -2223,6 +2428,7 @@ class GPUDBNN:
             'feature_pairs': self.feature_pairs,
             'classes': unique_classes
         }
+
 
     def _compute_pairwise_likelihood_parallel_old(self, dataset: torch.Tensor, labels: torch.Tensor, feature_dims: int):
         """Optimized non-parametric likelihood computation with configurable bin sizes"""
@@ -2450,13 +2656,13 @@ class GPUDBNN:
     def _initialize_bin_weights(self):
         """Initialize weights for either histogram bins or Gaussian components"""
         n_classes = len(self.label_encoder.classes_)
-        if modelType == "Histogram":
+        if self.modelType == "Histogram":
             self.weight_updater = BinWeightUpdater(
                 n_classes=n_classes,
                 feature_pairs=self.feature_pairs,
                 n_bins_per_dim=self.n_bins_per_dim
             )
-        elif modelType == "Gaussian":
+        elif self.modelType == "Gaussian":
             # Use same weight structure but for Gaussian components
             self.weight_updater = BinWeightUpdater(
                 n_classes=n_classes,
@@ -2478,7 +2684,7 @@ class GPUDBNN:
         true_classes = torch.tensor([int(case[1]) for case in failed_cases], device=self.device)
 
         # Compute posteriors for all cases at once
-        if modelType == "Histogram":
+        if self.modelType == "Histogram":
             posteriors, bin_indices = self._compute_batch_posterior(features)
         else:  # Gaussian model
             posteriors, _ = self._compute_batch_posterior_std(features)
@@ -2526,7 +2732,7 @@ class GPUDBNN:
         true_classes = torch.tensor([int(case[1]) for case in failed_cases], device=self.device)
 
         # Compute posteriors for all cases at once
-        if modelType == "Histogram":
+        if self.modelType == "Histogram":
             posteriors, bin_indices = self._compute_batch_posterior(features)
         else:  # Gaussian model
             posteriors, _ = self._compute_batch_posterior_std(features)
@@ -2764,14 +2970,14 @@ class GPUDBNN:
         try:
             for i in range(0, len(X), batch_size):
                 batch_X = X[i:min(i + batch_size, len(X))]
-                if modelType == "Histogram":
+                if self.modelType == "Histogram":
                     # Get posteriors only, ignore bin indices
                     posteriors, _ = self._compute_batch_posterior(batch_X)
-                elif modelType == "Gaussian":
+                elif self.modelType == "Gaussian":
                     # Get posteriors only, ignore component responsibilities
                     posteriors, _ = self._compute_batch_posterior_std(batch_X)
                 else:
-                    print(f"{modelType} is invalid. Please edit configuration file")
+                    print(f"{self.modelType} is invalid. Please edit configuration file")
 
                 batch_predictions = torch.argmax(posteriors, dim=1)
                 predictions.append(batch_predictions)
@@ -2946,10 +3152,11 @@ class GPUDBNN:
         log_file_path = os.path.join(self.training_save_path, f"{self.dataset_name}_training_log.csv")
 
         # Store tensors as class attributes for access during training
-        self.X_train_tensor = X_train
-        self.y_train_tensor = y_train
-        self.X_test_tensor = X_test
-        self.y_test_tensor = y_test
+        # Ensure all tensors are on the correct device
+        X_train = X_train.to(self.device)
+        y_train = y_train.to(self.device)
+        X_test = X_test.to(self.device)
+        y_test = y_test.to(self.device)
 
         # Handle data transfer to GPU correctly
         print("Setting up training and test data", end="\r", flush=True)
@@ -3098,7 +3305,7 @@ class GPUDBNN:
                     stop_training = True
 
             # Perform testing and update training data if training is stopped
-            if stop_training or (epoch + 1) % 25 == 0 or epoch == self.max_epochs - 1:
+            if  (epoch + 1) % 25 == 0 or epoch == self.max_epochs - 1:
                 # Track testing time
                 test_start_time = time.time()
                 print(f"Entering testing phase at {datetime.fromtimestamp(test_start_time).strftime('%H:%M:%S')} ", end="\r", flush=True)
@@ -3332,12 +3539,12 @@ class GPUDBNN:
             batch_X = X_tensor[i:batch_end]
 
             try:
-                if modelType == "Histogram":
+                if self.modelType == "Histogram":
                     batch_probs, _ = self._compute_batch_posterior(batch_X)
-                elif modelType == "Gaussian":
+                elif self.modelType == "Gaussian":
                     batch_probs, _ = self._compute_batch_posterior_std(batch_X)
                 else:
-                    raise ValueError(f"{modelType} is invalid")
+                    raise ValueError(f"{self.modelType} is invalid")
 
                 all_probabilities.append(batch_probs.cpu().numpy())
 
@@ -3386,12 +3593,12 @@ class GPUDBNN:
             batch_X = X_tensor[i:batch_end]
 
             try:
-                if modelType == "Histogram":
+                if self.modelType == "Histogram":
                     batch_probs, _ = self._compute_batch_posterior(batch_X)
-                elif modelType == "Gaussian":
+                elif self.modelType == "Gaussian":
                     batch_probs, _ = self._compute_batch_posterior_std(batch_X)
                 else:
-                    raise ValueError(f"{modelType} is invalid")
+                    raise ValueError(f"{self.modelType} is invalid")
 
                 all_probabilities.append(batch_probs.cpu().numpy())
 
@@ -3536,11 +3743,11 @@ class GPUDBNN:
 
     def _get_weights_filename(self):
         """Get the filename for saving/loading weights"""
-        return os.path.join('Model', f'Best_{modelType}_{self.dataset_name}_weights.json')
+        return os.path.join('Model', f'Best_{self.modelType}_{self.dataset_name}_weights.json')
 
     def _get_encoders_filename(self):
         """Get the filename for saving/loading categorical encoders"""
-        return os.path.join('Model', f'Best_{modelType}_{self.dataset_name}_encoders.json')
+        return os.path.join('Model', f'Best_{self.modelType}_{self.dataset_name}_encoders.json')
 
 
 
@@ -3838,7 +4045,7 @@ class GPUDBNN:
 
     def _get_model_components_filename(self):
         """Get filename for model components"""
-        return os.path.join('Model', f'Best{modelType}_{self.dataset_name}_components.pkl')
+        return os.path.join('Model', f'Best{self.modelType}_{self.dataset_name}_components.pkl')
 #----------------Handling categorical variables across sessions -------------------------
     def _save_categorical_encoders(self):
         """Save categorical feature encoders"""
@@ -3957,7 +4164,7 @@ class GPUDBNN:
 #--------------------------------------------------------------------------------------------------------------
 
     def _save_model_components(self):
-        """Save all model components to a pickle file"""
+        """Save all model components to a pickle file."""
         components = {
             'scaler': self.scaler,
             'label_encoder': self.label_encoder,
@@ -3972,15 +4179,15 @@ class GPUDBNN:
             'config': self.config,
             'high_cardinality_columns': getattr(self, 'high_cardinality_columns', []),
             'original_columns': getattr(self, 'original_columns', None),
-            'best_error': self.best_error,  # Explicitly save best error
+            'best_error': self.best_error,
             'last_training_loss': getattr(self, 'last_training_loss', float('inf')),
             'weight_updater': self.weight_updater,
-            'n_bins_per_dim': self.n_bins_per_dim
+            'n_bins_per_dim': self.n_bins_per_dim,
+            'preprocessing_info': self.data_preprocessor.__dict__  # Save preprocessing info
         }
 
         # Get the filename using existing method
         components_file = self._get_model_components_filename()
-
 
         # Ensure directory exists
         os.makedirs(os.path.dirname(components_file), exist_ok=True)
@@ -3991,7 +4198,6 @@ class GPUDBNN:
 
         print(f"Saved model components to {components_file}")
         return True
-
 
 
     def _load_model_components(self):
@@ -4492,6 +4698,7 @@ def main():
             ]):
                 continue
         print(f"\nProcessing dataset: {dataset}")
+
         config = DatasetConfig.load_config(dataset)
         if config is None:
             print(f"Skipping dataset {dataset} due to invalid configuration")
