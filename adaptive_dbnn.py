@@ -4387,7 +4387,7 @@ def main():
                         required=False, default='train_predict',
                         help="Mode to run the network: train, train_predict, or invertDBNN.")
     args = parser.parse_args()
-
+    nokbd=True
     # Debug: Print configuration values
     DEBUG.log(f"Train: {Train}")
     DEBUG.log(f"Train_only: {Train_only}")
