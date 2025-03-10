@@ -1264,6 +1264,9 @@ class GPUDBNN:
             DEBUG.log(f"Columns: {df.columns.tolist()}")
             DEBUG.log(f"Data types:\n{df.dtypes}")
 
+            # Set self.data after loading the dataset
+            self.data = df
+
             # After loading data, preprocess and store information if needed
             if not hasattr(self, 'preprocessing_done') or self.fresh_start:
                 X = df.drop(columns=[self.target_column])
@@ -2052,10 +2055,15 @@ class GPUDBNN:
     #------------------------------------------Adaptive Learning--------------------------------------
 
 
-    def _calculate_cardinality_threshold(self):
-        """Calculate appropriate cardinality threshold based on dataset characteristics"""
-        n_samples = len(self.data)
-        n_classes = len(self.data[self.target_column].unique())
+    def _calculate_cardinality_threshold(self, data: pd.DataFrame = None):
+        """Calculate appropriate cardinality threshold based on dataset characteristics."""
+        if data is None:
+            if not hasattr(self, 'data'):
+                raise ValueError("Dataset not loaded. Call _load_dataset first.")
+            data = self.data
+
+        n_samples = len(data)
+        n_classes = len(data[self.target_column].unique())
 
         # Base threshold from config
         base_threshold = cardinality_threshold
@@ -2181,10 +2189,11 @@ class GPUDBNN:
         # Make a copy to avoid modifying the original data
         X = X.copy()
 
-        # Calculate cardinality threshold
-        cardinality_threshold = self._calculate_cardinality_threshold()
+        # Calculate cardinality threshold using the provided data
+        cardinality_threshold = self._calculate_cardinality_threshold(data=X)
         DEBUG.log(f"Cardinality threshold: {cardinality_threshold}")
 
+        # Rest of the preprocessing logic remains the same
         if is_training:
             DEBUG.log("Training mode preprocessing")
             self.original_columns = X.columns.tolist()
