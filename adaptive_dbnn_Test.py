@@ -109,8 +109,8 @@ class DataPreprocessor:
         self.feature_bounds = None
         self.n_bins_per_dim = config.get('likelihood_config', {}).get('bin_sizes', [20])[0]
 
-    def preprocess_and_store(self, X, y):
-        """Preprocess data and store all necessary information"""
+    def preprocess_and_store(self, X: np.ndarray, y: np.ndarray):
+        """Preprocess data and store all necessary information."""
         # Feature grouping
         self.feature_groups = self._generate_feature_groups(X)
 
@@ -138,8 +138,8 @@ class DataPreprocessor:
 
         return all_combinations
 
-    def _compute_bin_edges_and_scalers(self, X):
-        """Compute bin edges and scalers for each feature group"""
+    def _compute_bin_edges_and_scalers(self, X: np.ndarray) -> Tuple[List[List[torch.Tensor]], List[StandardScaler]]:
+        """Compute bin edges and scalers for each feature group."""
         bin_edges = []
         scalers = []
 
@@ -163,8 +163,8 @@ class DataPreprocessor:
 
         return bin_edges, scalers
 
-    def _compute_feature_bounds(self, X):
-        """Compute global feature bounds"""
+    def _compute_feature_bounds(self, X: np.ndarray) -> Dict[int, Dict[str, float]]:
+        """Compute global feature bounds."""
         bounds = {}
         for i in range(X.shape[1]):
             min_val = X[:, i].min()
