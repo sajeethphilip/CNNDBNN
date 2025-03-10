@@ -1,5 +1,6 @@
 import torch
 import time
+from datetime import datetime
 import argparse
 import numpy as np
 import pandas as pd
@@ -2938,6 +2939,8 @@ class GPUDBNN:
         """
         # Ensure the output directory exists
         os.makedirs(self.training_save_path, exist_ok=True)
+        # Initialize learning rate
+        initial_lr = self.learning_rate
 
         # Define the log file path
         log_file_path = os.path.join(self.training_save_path, f"{self.dataset_name}_training_log.csv")
@@ -3032,6 +3035,7 @@ class GPUDBNN:
             train_start_time = time.time()
             failed_cases = []
             n_errors = 0
+            self.learning_rate = adaptive_learning_rate_decay(initial_lr, epoch)
 
             # Update static message for the current epoch
             update_static_message(f"Epoch {epoch + 1}/{self.max_epochs} | Start Time: {time.strftime('%H:%M:%S')} | Elapsed: {time.time() - start_time:.2f}s | Test accuracy: {test_accuracy} | Train accuracy {train_acc}")
@@ -3097,7 +3101,7 @@ class GPUDBNN:
             if stop_training or (epoch + 1) % 25 == 0 or epoch == self.max_epochs - 1:
                 # Track testing time
                 test_start_time = time.time()
-                print(f"Entering testing phase at {test_start_time.strftime('%H:%M:%S')} ", end="\r", flush=True)
+                print(f"Entering testing phase at {datetime.fromtimestamp(test_start_time).strftime('%H:%M:%S')} ", end="\r", flush=True)
 
                 # Calculate test accuracy on all remaining test data
                 if hasattr(self, 'test_indices') and self.test_indices:
@@ -3110,7 +3114,7 @@ class GPUDBNN:
                     test_accuracy = (test_predictions == y_test.cpu()).float().mean()
 
                 test_time = time.time() - test_start_time
-                print(f"Test completed at {(test_start_time+test_time).strftime('%H:%M:%S')}  in {test_time} seconds", end="\r", flush=True)
+                print(f"Test completed at {datetime.fromtimestamp(test_start_time+test_time).strftime('%H:%M:%S')}  in {test_time} seconds", end="\r", flush=True)
 
                 # Update epoch progress bar with current metrics
                 epoch_bar.set_postfix({
@@ -4123,7 +4127,19 @@ def plot_confusion_matrix(confusion_mat: np.ndarray, class_names: np.ndarray, da
     plt.xlabel('Predicted Label')
     plt.show()
 
-
+def adaptive_learning_rate_decay(initial_lr, epoch, decay_rate=0.95, min_lr=LearningRate):
+    """
+    Exponential decay for learning rate.
+    Args:
+        initial_lr: Initial learning rate.
+        epoch: Current epoch.
+        decay_rate: Rate of decay (default: 0.95).
+        min_lr: Minimum learning rate (default: LearningRate).
+    Returns:
+        Adjusted learning rate.
+    """
+    lr = initial_lr * (decay_rate ** epoch)
+    return max(lr, min_lr)
 
 
 def generate_test_datasets():
