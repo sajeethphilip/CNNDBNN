@@ -2400,9 +2400,9 @@ class GPUDBNN:
                     ]).clamp_(0, bin_shape[1] - 1)
 
                     # Update bin counts using advanced indexing
-                    # Convert group_bin_indices to a list of tensors for each dimension
-                    indices = [group_bin_indices[:, dim] for dim in range(len(feature_group))]
-                    bin_counts[class_idx, indices] += 1
+                    # Convert group_bin_indices to a tuple of tensors for each dimension
+                    indices = tuple(group_bin_indices[dim] for dim in range(len(feature_group)))
+                    bin_counts[class_idx][indices] += 1
 
             # Apply Laplace smoothing and compute probabilities
             smoothed_counts = bin_counts + 1.0
@@ -2419,6 +2419,8 @@ class GPUDBNN:
             'feature_pairs': self.feature_pairs,
             'classes': unique_classes
         }
+
+
     def _compute_pairwise_likelihood_parallel_old(self, dataset: torch.Tensor, labels: torch.Tensor, feature_dims: int):
         """Optimized non-parametric likelihood computation with configurable bin sizes"""
         DEBUG.log(" Starting _compute_pairwise_likelihood_parallel")
