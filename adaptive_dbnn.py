@@ -1898,6 +1898,9 @@ class GPUDBNN:
             print("No misclassified examples found.")
             return []
 
+        # Convert misclassified_indices to a NumPy array for indexing
+        misclassified_indices = misclassified_indices.cpu().numpy()
+
         # Initialize a dictionary to store the worst example for each feature group
         worst_examples = {}
 
@@ -1907,7 +1910,7 @@ class GPUDBNN:
             feature_group = tuple(int(feat) for feat in feature_group)
 
             # Get the data for this feature group
-            group_data = self.X_tensor[test_indices[misclassified_indices.cpu().numpy()], feature_group]
+            group_data = self.X_tensor[test_indices[misclassified_indices], feature_group]
 
             # Compute posteriors for this feature group
             print(f"Computing the posteriors for the group {group_idx} for the {self.modelType} model", end="\r", flush=True)
@@ -1924,7 +1927,7 @@ class GPUDBNN:
             error_margins = pred_probs - true_probs
 
             # Find the example with the highest margin of error for this feature group
-            worst_example_idx = misclassified_indices[torch.argmax(error_margins)].item()
+            worst_example_idx = misclassified_indices[torch.argmax(error_margins).item()]
             worst_examples[group_idx] = worst_example_idx
             print(f"Adding the example at index {worst_example_idx} for the group {group_idx}", end="\r", flush=True)
 
