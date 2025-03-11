@@ -1889,8 +1889,8 @@ class GPUDBNN:
             # Training loop
             for round_num in range(max_rounds):
                 print(f"\nRound {round_num + 1}/{max_rounds}")
-                print(f"Training set size: {len(train_indices)}")
-                print(f"Test set size: {len(test_indices)}")
+                print(f"Training set size: {len(self.train_indices)}")
+                print(f"Test set size: {len(self.test_indices)}")
 
                 # Train the model
                 results = self.fit_predict(batch_size=batch_size)
