@@ -1864,6 +1864,7 @@ class GPUDBNN:
             # Get initial data
             column_names = config['column_names']
             X = self.data[column_names]
+            print(f"X vector has {len(X)} columns")
             X = X.drop(columns=[self.target_column])
             y = self.data[self.target_column]
             DEBUG.log(f"Initial data shape: X={X.shape}, y={len(y)}")
