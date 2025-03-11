@@ -1913,7 +1913,10 @@ class GPUDBNN:
             feature_group = tuple(int(feat) for feat in feature_group)
 
             # Get the data for this feature group using the full dataset indices
-            group_data = self.X_tensor[full_dataset_indices, feature_group]
+            # Step 1: Select rows using full_dataset_indices
+            selected_rows = self.X_tensor[full_dataset_indices]
+            # Step 2: Select columns using feature_group
+            group_data = selected_rows[:, feature_group]
 
             # Compute posteriors for this feature group
             print(f"Computing the posteriors for the group {group_idx} for the {self.modelType} model", end="\r", flush=True)
