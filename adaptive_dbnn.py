@@ -1705,136 +1705,66 @@ class GPUDBNN:
 
         return selected_indices
 
-    def _select_samples_from_failed_classes_old(self, test_predictions, y_test, test_indices):
+    def _select_samples_from_failed_classes(self, test_predictions, y_test, test_indices):
         """
-        Memory-efficient implementation of sample selection using batched processing
+        Select one example per feature group with the highest margin of error.
         """
-        # Configuration parameters
-        active_learning_config = self.config.get('active_learning', {})
-        tolerance = active_learning_config.get('tolerance', 1.0) / 100.0
-        min_divergence = active_learning_config.get('min_divergence', 0.1)
-        strong_margin_threshold = active_learning_config.get('strong_margin_threshold', 0.3)
-        marginal_margin_threshold = active_learning_config.get('marginal_margin_threshold', 0.1)
+        print("Starting searching for failed examples from each feature group", end="\r", flush=True)
 
-        # Calculate optimal batch size based on sample size
-        sample_size = self.X_tensor[0].element_size() * self.X_tensor[0].nelement()
-        batch_size = self._calculate_optimal_batch_size(sample_size)
-        DEBUG.log(f"\nUsing dynamic batch size: {batch_size}")
-
-        test_predictions = torch.as_tensor(test_predictions, device=self.device)
-        y_test = torch.as_tensor(y_test, device=self.device)
-        test_indices = torch.as_tensor(test_indices, device=self.device)
-
+        # Ensure test_indices and misclassified_indices are numpy arrays
+        test_indices = np.array(test_indices, dtype=int)
         misclassified_mask = (test_predictions != y_test)
-        misclassified_indices = torch.nonzero(misclassified_mask).squeeze()
+        misclassified_indices = np.where(misclassified_mask)[0]
 
-        if  misclassified_indices.dim() == 0:
+        # Check if there are any misclassified examples
+        if len(misclassified_indices) == 0:
+            print("No misclassified examples found.")
             return []
 
-        final_selected_indices = []
-        unique_classes = torch.unique(y_test[misclassified_indices])
+        # Initialize a dictionary to store the worst example for each feature group
+        worst_examples = {}
 
-        for class_id in unique_classes:
-            class_mask = y_test[misclassified_indices] == class_id
-            class_indices = misclassified_indices[class_mask]
+        # Process each feature group
+        for group_idx, feature_group in enumerate(self.feature_pairs):
+            # Ensure feature_group is a tuple of integers
+            feature_group = tuple(int(feat) for feat in feature_group)
 
-            if len(class_indices) == 0:
-                continue
+            # Get the data for this feature group
+            group_data = self.X_tensor[test_indices[misclassified_indices], feature_group]
 
-            # Process class samples in batches
-            for batch_start in range(0, len(class_indices), batch_size):
-                batch_end = min(batch_start + batch_size, len(class_indices))
-                batch_indices = class_indices[batch_start:batch_end]
+            # Compute posteriors for this feature group
+            print(f"Computing the posteriors for the group {group_idx} for the {self.modelType} model", end="\r", flush=True)
+            if self.modelType == "Histogram":
+                posteriors, _ = self._compute_batch_posterior(group_data)
+            elif self.modelType == "Gaussian":
+                posteriors, _ = self._compute_batch_posterior_std(group_data)
 
-                # Get batch data
-                batch_samples = self.X_tensor[test_indices[batch_indices]]
+            # Get the true and predicted probabilities for misclassified examples
+            true_probs = posteriors[np.arange(len(misclassified_indices)), y_test[misclassified_indices]]
+            pred_probs = posteriors[np.arange(len(misclassified_indices)), test_predictions[misclassified_indices]]
 
-                # Compute probabilities for batch
-                if self.modelType == "Histogram":
-                    probs, _ = self._compute_batch_posterior(batch_samples)
-                else:
-                    probs, _ = self._compute_batch_posterior_std(batch_samples)
+            # Compute the margin of error (difference between predicted and true probabilities)
+            error_margins = pred_probs - true_probs
 
-                # Compute error margins for batch
-                true_probs = probs[:, class_id]
-                pred_classes = torch.argmax(probs, dim=1)
-                pred_probs = probs[torch.arange(len(pred_classes)), pred_classes]
-                error_margins = pred_probs - true_probs
+            # Find the example with the highest margin of error for this feature group
+            worst_example_idx = misclassified_indices[np.argmax(error_margins)]
+            worst_examples[group_idx] = worst_example_idx
+            print(f"Adding the example at index {worst_example_idx} for the group {group_idx}", end="\r", flush=True)
 
-                # Split into strong and marginal failures
-                strong_failures = error_margins >= strong_margin_threshold
-                marginal_failures = (error_margins > 0) & (error_margins < marginal_margin_threshold)
+        # Convert the worst examples to a list of indices
+        selected_indices = list(worst_examples.values())
 
-                # Process each failure type
-                for failure_type, failure_mask in [("strong", strong_failures), ("marginal", marginal_failures)]:
-                    if not failure_mask.any():
-                        continue
+        # Print selection info
+        print(f"\nSelected {len(selected_indices)} examples (one per feature group) with the highest margin of error.", end="\r", flush=True)
+        for group_idx, idx in worst_examples.items():
+            true_class = y_test[idx]
+            pred_class = test_predictions[idx]
+            true_prob = posteriors[np.where(misclassified_indices == idx)[0][0], true_class]
+            pred_prob = posteriors[np.where(misclassified_indices == idx)[0][0], pred_class]
+            print(f"Feature Group {group_idx}: Example {idx} (True Class: {true_class}, Pred Class: {pred_class}, "
+                  f"True Prob: {true_prob:.4f}, Pred Prob: {pred_prob:.4f}, Error Margin: {pred_prob - true_prob:.4f})")
 
-                    # Get failure samples for this batch
-                    failure_samples = batch_samples[failure_mask]
-                    failure_margins = error_margins[failure_mask]
-                    failure_indices = test_indices[batch_indices[failure_mask]]
-
-                    # Compute cardinalities for these samples
-                    cardinalities = self._compute_feature_cardinalities(failure_samples)
-
-                    # Use dynamic threshold based on distribution
-                    cardinality_threshold = torch.median(cardinalities)
-                    low_card_mask = cardinalities <= cardinality_threshold
-
-                    if not low_card_mask.any():
-                        continue
-
-                    # Process samples meeting cardinality criteria
-                    low_card_samples = failure_samples[low_card_mask]
-                    low_card_margins = failure_margins[low_card_mask]
-                    low_card_indices = failure_indices[low_card_mask]
-
-                    # Compute divergences only for low cardinality samples
-                    divergences = self._compute_sample_divergence(low_card_samples, self.feature_pairs)
-
-                    # Select diverse samples efficiently
-                    selected_mask = torch.zeros(len(low_card_samples), dtype=torch.bool, device=self.device)
-
-                    # Initialize with best margin sample
-                    if failure_type == "strong":
-                        best_idx = torch.argmax(low_card_margins)
-                    else:
-                        best_idx = torch.argmin(low_card_margins)
-                    selected_mask[best_idx] = True
-
-                    # Add diverse samples meeting divergence criterion
-                    while True:
-                        # Compute minimum divergence to selected samples
-                        min_divs = divergences[:, selected_mask].min(dim=1)[0]
-                        candidate_mask = (~selected_mask) & (min_divs >= min_divergence)
-
-                        if not candidate_mask.any():
-                            break
-
-                        # Select next sample based on margin type
-                        candidate_margins = low_card_margins.clone()
-                        candidate_margins[~candidate_mask] = float('inf') if failure_type == "marginal" else float('-inf')
-
-                        best_idx = torch.argmin(candidate_margins) if failure_type == "marginal" else torch.argmax(candidate_margins)
-                        selected_mask[best_idx] = True
-
-                    # Add selected indices
-                    selected_indices = low_card_indices[selected_mask]
-                    final_selected_indices.extend(selected_indices.cpu().tolist())
-
-                    # Print selection info
-                    true_class_name = self.label_encoder.inverse_transform([class_id.item()])[0]
-                    n_selected = selected_mask.sum().item()
-                    DEBUG.log(f" Selected {n_selected} {failure_type} failure samples from class {true_class_name}")
-                    DEBUG.log(f" - Cardinality threshold: {cardinality_threshold:.3f}")
-                    DEBUG.log(f" - Average margin: {low_card_margins[selected_mask].mean().item():.3f}")
-
-                # Clear cache after processing each batch
-                torch.cuda.empty_cache()
-
-        print(f"\nTotal samples selected: {len(final_selected_indices)}")
-        return final_selected_indices
+        return selected_indices
 
     def log_training_epoch(self,epoch, train_sample_size, train_time, train_accuracy, test_size, testing_time, test_accuracy, log_file_path):
         """Log training and testing metrics for each epoch to a CSV file"""
