@@ -1682,12 +1682,17 @@ class GPUDBNN:
             DEBUG.log(f"Initial data shape: X={X.shape}, y={len(y)}")
             y = self.data[self.target_column]
             DEBUG.log(f" Initial data shape: X={X.shape}, y={len(y)}")
+
             # Initialize label encoder if not already done
             if not hasattr(self.label_encoder, 'classes_'):
                 self.label_encoder.fit(y)
 
             # Use existing label encoder
             y_encoded = self.label_encoder.transform(y)
+
+            # Get unique classes
+            unique_classes = torch.unique(torch.tensor(y_encoded, device=self.device))
+            n_classes = len(unique_classes)
 
             # Process features and initialize model components if needed
             X_processed = self._preprocess_data(X, is_training=True)
@@ -1723,7 +1728,6 @@ class GPUDBNN:
             # Initialize model weights if needed
             if self.current_W is None:
                 DEBUG.log(" Initializing model weights")
-                n_classes = len(unique_classes)
                 n_pairs = len(self.feature_pairs) if self.feature_pairs is not None else 0
                 if n_pairs == 0:
                     raise ValueError("Feature pairs not initialized")
@@ -1740,7 +1744,7 @@ class GPUDBNN:
             if len(train_indices) == 0:
                 # Select minimum samples from each class for initial training
                 for class_label in unique_classes:
-                    class_indices = np.where(y_encoded == class_label)[0]
+                    class_indices = np.where(y_encoded == class_label.item())[0]
                     if len(class_indices) < 2:
                         selected_indices = class_indices  # Take all available if less than 2
                     else:
