@@ -1644,6 +1644,66 @@ class GPUDBNN:
 
     def _select_samples_from_failed_classes(self, test_predictions, y_test, test_indices):
         """
+        Select one example per feature group with the highest margin of error.
+        """
+        # Configuration parameters
+        active_learning_config = self.config.get('active_learning', {})
+        tolerance = active_learning_config.get('tolerance', 1.0) / 100.0
+
+        # Convert tensors to numpy arrays if necessary
+        test_predictions = test_predictions.cpu().numpy() if torch.is_tensor(test_predictions) else test_predictions
+        y_test = y_test.cpu().numpy() if torch.is_tensor(y_test) else y_test
+        test_indices = test_indices.cpu().numpy() if torch.is_tensor(test_indices) else test_indices
+
+        # Get misclassified examples
+        misclassified_mask = (test_predictions != y_test)
+        misclassified_indices = np.where(misclassified_mask)[0]
+
+        if len(misclassified_indices) == 0:
+            return []  # No misclassified examples
+
+        # Initialize a dictionary to store the worst example for each feature group
+        worst_examples = {}
+
+        # Process each feature group
+        for group_idx, feature_group in enumerate(self.feature_pairs):
+            # Get the data for this feature group
+            group_data = self.X_tensor[test_indices[misclassified_indices], feature_group]
+
+            # Compute posteriors for this feature group
+            if self.modelType == "Histogram":
+                posteriors, _ = self._compute_batch_posterior(group_data)
+            elif self.modelType == "Gaussian":
+                posteriors, _ = self._compute_batch_posterior_std(group_data)
+
+            # Get the true and predicted probabilities for misclassified examples
+            true_probs = posteriors[np.arange(len(misclassified_indices)), y_test[misclassified_indices]]
+            pred_probs = posteriors[np.arange(len(misclassified_indices)), test_predictions[misclassified_indices]]
+
+            # Compute the margin of error (difference between predicted and true probabilities)
+            error_margins = pred_probs - true_probs
+
+            # Find the example with the highest margin of error for this feature group
+            worst_example_idx = misclassified_indices[np.argmax(error_margins)]
+            worst_examples[group_idx] = worst_example_idx
+
+        # Convert the worst examples to a list of indices
+        selected_indices = list(worst_examples.values())
+
+        # Print selection info
+        print(f"\nSelected {len(selected_indices)} examples (one per feature group) with the highest margin of error.")
+        for group_idx, idx in worst_examples.items():
+            true_class = y_test[idx]
+            pred_class = test_predictions[idx]
+            true_prob = posteriors[np.where(misclassified_indices == idx)[0][0], true_class]
+            pred_prob = posteriors[np.where(misclassified_indices == idx)[0][0], pred_class]
+            print(f"Feature Group {group_idx}: Example {idx} (True Class: {true_class}, Pred Class: {pred_class}, "
+                  f"True Prob: {true_prob:.4f}, Pred Prob: {pred_prob:.4f}, Error Margin: {pred_prob - true_prob:.4f})")
+
+        return selected_indices
+
+    def _select_samples_from_failed_classes_old(self, test_predictions, y_test, test_indices):
+        """
         Memory-efficient implementation of sample selection using batched processing
         """
         # Configuration parameters
