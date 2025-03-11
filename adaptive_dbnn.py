@@ -1901,6 +1901,9 @@ class GPUDBNN:
         # Convert misclassified_indices to a NumPy array for indexing
         misclassified_indices = misclassified_indices.cpu().numpy()
 
+        # Map misclassified_indices (relative to the test set) to full dataset indices
+        full_dataset_indices = test_indices[misclassified_indices]
+
         # Initialize a dictionary to store the worst example for each feature group
         worst_examples = {}
 
@@ -1909,8 +1912,8 @@ class GPUDBNN:
             # Ensure feature_group is a tuple of integers
             feature_group = tuple(int(feat) for feat in feature_group)
 
-            # Get the data for this feature group
-            group_data = self.X_tensor[test_indices[misclassified_indices], feature_group]
+            # Get the data for this feature group using the full dataset indices
+            group_data = self.X_tensor[full_dataset_indices, feature_group]
 
             # Compute posteriors for this feature group
             print(f"Computing the posteriors for the group {group_idx} for the {self.modelType} model", end="\r", flush=True)
@@ -1927,7 +1930,7 @@ class GPUDBNN:
             error_margins = pred_probs - true_probs
 
             # Find the example with the highest margin of error for this feature group
-            worst_example_idx = misclassified_indices[torch.argmax(error_margins).item()]
+            worst_example_idx = full_dataset_indices[torch.argmax(error_margins).item()]
             worst_examples[group_idx] = worst_example_idx
             print(f"Adding the example at index {worst_example_idx} for the group {group_idx}", end="\r", flush=True)
 
@@ -1937,10 +1940,10 @@ class GPUDBNN:
         # Print selection info
         print(f"\nSelected {len(selected_indices)} examples (one per feature group) with the highest margin of error.", end="\r", flush=True)
         for group_idx, idx in worst_examples.items():
-            true_class = y_test[idx].item()
-            pred_class = test_predictions[idx].item()
-            true_prob = posteriors[torch.where(misclassified_indices == idx)[0][0], true_class].item()
-            pred_prob = posteriors[torch.where(misclassified_indices == idx)[0][0], pred_class].item()
+            true_class = y_test[misclassified_indices[full_dataset_indices == idx][0]].item()
+            pred_class = test_predictions[misclassified_indices[full_dataset_indices == idx][0]].item()
+            true_prob = posteriors[torch.where(full_dataset_indices == idx)[0][0], true_class].item()
+            pred_prob = posteriors[torch.where(full_dataset_indices == idx)[0][0], pred_class].item()
             print(f"Feature Group {group_idx}: Example {idx} (True Class: {true_class}, Pred Class: {pred_class}, "
                   f"True Prob: {true_prob:.4f}, Pred Prob: {pred_prob:.4f}, Error Margin: {pred_prob - true_prob:.4f})")
 
