@@ -1646,6 +1646,7 @@ class GPUDBNN:
         """
         Select one example per feature group with the highest margin of error.
         """
+        print("Starting searching for failed examples from each  feature group", end="\r", flush=True)
         # Configuration parameters
         active_learning_config = self.config.get('active_learning', {})
         tolerance = active_learning_config.get('tolerance', 1.0) / 100.0
@@ -1658,7 +1659,7 @@ class GPUDBNN:
         # Get misclassified examples
         misclassified_mask = (test_predictions != y_test)
         misclassified_indices = np.where(misclassified_mask)[0]
-
+        print(f"Identified {len(misclassified_indices)} failed examples", end="\r", flush=True)
         if len(misclassified_indices) == 0:
             return []  # No misclassified examples
 
@@ -1671,6 +1672,7 @@ class GPUDBNN:
             group_data = self.X_tensor[test_indices[misclassified_indices], feature_group]
 
             # Compute posteriors for this feature group
+            print(f"Computing the posteriors for the group {group_idx} for the {self.modelType} model" , end="\r", flush=True)
             if self.modelType == "Histogram":
                 posteriors, _ = self._compute_batch_posterior(group_data)
             elif self.modelType == "Gaussian":
@@ -1686,12 +1688,13 @@ class GPUDBNN:
             # Find the example with the highest margin of error for this feature group
             worst_example_idx = misclassified_indices[np.argmax(error_margins)]
             worst_examples[group_idx] = worst_example_idx
+            print(f"Adding the example at index {worst_example_idx} for the group {group_idx}", end="\r", flush=True)
 
         # Convert the worst examples to a list of indices
         selected_indices = list(worst_examples.values())
 
         # Print selection info
-        print(f"\nSelected {len(selected_indices)} examples (one per feature group) with the highest margin of error.")
+        print(f"\nSelected {len(selected_indices)} examples (one per feature group) with the highest margin of error.", end="\r", flush=True)
         for group_idx, idx in worst_examples.items():
             true_class = y_test[idx]
             pred_class = test_predictions[idx]
