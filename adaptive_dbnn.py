@@ -1642,6 +1642,193 @@ class GPUDBNN:
             DEBUG.log(f" Error calculating batch size: {str(e)}")
             return 128  # Default fallback
 
+    def _select_samples_from_failed_classes(self, test_predictions, y_test, test_indices, posteriors):
+        """
+        Select one example per feature group with the highest margin of error using precomputed posteriors.
+        """
+        # Configuration parameters
+        active_learning_config = self.config.get('active_learning', {})
+        tolerance = active_learning_config.get('tolerance', 1.0) / 100.0
+
+        # Convert tensors to numpy arrays if necessary
+        test_predictions = test_predictions.cpu().numpy() if torch.is_tensor(test_predictions) else test_predictions
+        y_test = y_test.cpu().numpy() if torch.is_tensor(y_test) else y_test
+        test_indices = test_indices.cpu().numpy() if torch.is_tensor(test_indices) else test_indices
+
+        # Get misclassified examples
+        misclassified_mask = (test_predictions != y_test)
+        misclassified_indices = np.where(misclassified_mask)[0]
+
+        if len(misclassified_indices) == 0:
+            return []  # No misclassified examples
+
+        # Initialize a dictionary to store the worst example for each feature group
+        worst_examples = {}
+
+        # Process each feature group
+        for group_idx, feature_group in enumerate(self.feature_pairs):
+            # Get the data for this feature group
+            group_data = self.X_tensor[test_indices[misclassified_indices], feature_group]
+
+            # Get the posteriors for this feature group
+            group_posteriors = posteriors[misclassified_indices]
+
+            # Get the true and predicted probabilities for misclassified examples
+            true_probs = group_posteriors[np.arange(len(misclassified_indices)), y_test[misclassified_indices]]
+            pred_probs = group_posteriors[np.arange(len(misclassified_indices)), test_predictions[misclassified_indices]]
+
+            # Compute the margin of error (difference between predicted and true probabilities)
+            error_margins = pred_probs - true_probs
+
+            # Find the example with the highest margin of error for this feature group
+            worst_example_idx = misclassified_indices[np.argmax(error_margins)]
+            worst_examples[group_idx] = worst_example_idx
+
+        # Convert the worst examples to a list of indices
+        selected_indices = list(worst_examples.values())
+
+        # Print selection info
+        print(f"\nSelected {len(selected_indices)} examples (one per feature group) with the highest margin of error.")
+        for group_idx, idx in worst_examples.items():
+            true_class = y_test[idx]
+            pred_class = test_predictions[idx]
+            true_prob = posteriors[np.where(misclassified_indices == idx)[0][0], true_class]
+            pred_prob = posteriors[np.where(misclassified_indices == idx)[0][0], pred_class]
+            print(f"Feature Group {group_idx}: Example {idx} (True Class: {true_class}, Pred Class: {pred_class}, "
+                  f"True Prob: {true_prob:.4f}, Pred Prob: {pred_prob:.4f}, Error Margin: {pred_prob - true_prob:.4f})")
+
+        return selected_indices
+
+    def _select_samples_from_failed_classes_old(self, test_predictions, y_test, test_indices):
+        """
+        Memory-efficient implementation of sample selection using batched processing
+        """
+        # Configuration parameters
+        active_learning_config = self.config.get('active_learning', {})
+        tolerance = active_learning_config.get('tolerance', 1.0) / 100.0
+        min_divergence = active_learning_config.get('min_divergence', 0.1)
+        strong_margin_threshold = active_learning_config.get('strong_margin_threshold', 0.3)
+        marginal_margin_threshold = active_learning_config.get('marginal_margin_threshold', 0.1)
+
+        # Calculate optimal batch size based on sample size
+        sample_size = self.X_tensor[0].element_size() * self.X_tensor[0].nelement()
+        batch_size = self._calculate_optimal_batch_size(sample_size)
+        DEBUG.log(f"\nUsing dynamic batch size: {batch_size}")
+
+        test_predictions = torch.as_tensor(test_predictions, device=self.device)
+        y_test = torch.as_tensor(y_test, device=self.device)
+        test_indices = torch.as_tensor(test_indices, device=self.device)
+
+        misclassified_mask = (test_predictions != y_test)
+        misclassified_indices = torch.nonzero(misclassified_mask).squeeze()
+
+        if  misclassified_indices.dim() == 0:
+            return []
+
+        final_selected_indices = []
+        unique_classes = torch.unique(y_test[misclassified_indices])
+
+        for class_id in unique_classes:
+            class_mask = y_test[misclassified_indices] == class_id
+            class_indices = misclassified_indices[class_mask]
+
+            if len(class_indices) == 0:
+                continue
+
+            # Process class samples in batches
+            for batch_start in range(0, len(class_indices), batch_size):
+                batch_end = min(batch_start + batch_size, len(class_indices))
+                batch_indices = class_indices[batch_start:batch_end]
+
+                # Get batch data
+                batch_samples = self.X_tensor[test_indices[batch_indices]]
+
+                # Compute probabilities for batch
+                if self.modelType == "Histogram":
+                    probs, _ = self._compute_batch_posterior(batch_samples)
+                else:
+                    probs, _ = self._compute_batch_posterior_std(batch_samples)
+
+                # Compute error margins for batch
+                true_probs = probs[:, class_id]
+                pred_classes = torch.argmax(probs, dim=1)
+                pred_probs = probs[torch.arange(len(pred_classes)), pred_classes]
+                error_margins = pred_probs - true_probs
+
+                # Split into strong and marginal failures
+                strong_failures = error_margins >= strong_margin_threshold
+                marginal_failures = (error_margins > 0) & (error_margins < marginal_margin_threshold)
+
+                # Process each failure type
+                for failure_type, failure_mask in [("strong", strong_failures), ("marginal", marginal_failures)]:
+                    if not failure_mask.any():
+                        continue
+
+                    # Get failure samples for this batch
+                    failure_samples = batch_samples[failure_mask]
+                    failure_margins = error_margins[failure_mask]
+                    failure_indices = test_indices[batch_indices[failure_mask]]
+
+                    # Compute cardinalities for these samples
+                    cardinalities = self._compute_feature_cardinalities(failure_samples)
+
+                    # Use dynamic threshold based on distribution
+                    cardinality_threshold = torch.median(cardinalities)
+                    low_card_mask = cardinalities <= cardinality_threshold
+
+                    if not low_card_mask.any():
+                        continue
+
+                    # Process samples meeting cardinality criteria
+                    low_card_samples = failure_samples[low_card_mask]
+                    low_card_margins = failure_margins[low_card_mask]
+                    low_card_indices = failure_indices[low_card_mask]
+
+                    # Compute divergences only for low cardinality samples
+                    divergences = self._compute_sample_divergence(low_card_samples, self.feature_pairs)
+
+                    # Select diverse samples efficiently
+                    selected_mask = torch.zeros(len(low_card_samples), dtype=torch.bool, device=self.device)
+
+                    # Initialize with best margin sample
+                    if failure_type == "strong":
+                        best_idx = torch.argmax(low_card_margins)
+                    else:
+                        best_idx = torch.argmin(low_card_margins)
+                    selected_mask[best_idx] = True
+
+                    # Add diverse samples meeting divergence criterion
+                    while True:
+                        # Compute minimum divergence to selected samples
+                        min_divs = divergences[:, selected_mask].min(dim=1)[0]
+                        candidate_mask = (~selected_mask) & (min_divs >= min_divergence)
+
+                        if not candidate_mask.any():
+                            break
+
+                        # Select next sample based on margin type
+                        candidate_margins = low_card_margins.clone()
+                        candidate_margins[~candidate_mask] = float('inf') if failure_type == "marginal" else float('-inf')
+
+                        best_idx = torch.argmin(candidate_margins) if failure_type == "marginal" else torch.argmax(candidate_margins)
+                        selected_mask[best_idx] = True
+
+                    # Add selected indices
+                    selected_indices = low_card_indices[selected_mask]
+                    final_selected_indices.extend(selected_indices.cpu().tolist())
+
+                    # Print selection info
+                    true_class_name = self.label_encoder.inverse_transform([class_id.item()])[0]
+                    n_selected = selected_mask.sum().item()
+                    DEBUG.log(f" Selected {n_selected} {failure_type} failure samples from class {true_class_name}")
+                    DEBUG.log(f" - Cardinality threshold: {cardinality_threshold:.3f}")
+                    DEBUG.log(f" - Average margin: {low_card_margins[selected_mask].mean().item():.3f}")
+
+                # Clear cache after processing each batch
+                torch.cuda.empty_cache()
+
+        print(f"\nTotal samples selected: {len(final_selected_indices)}")
+        return final_selected_indices
 
     def log_training_epoch(self,epoch, train_sample_size, train_time, train_accuracy, test_size, testing_time, test_accuracy, log_file_path):
         """Log training and testing metrics for each epoch to a CSV file"""
@@ -1661,10 +1848,9 @@ class GPUDBNN:
                             load_epoch: int = None,
                             batch_size: int = 32):
         """
-        Modified adaptive training strategy that monitors overall improvement across rounds.
-        Stops if adding new samples doesn't improve accuracy after several rounds.
+        Modified adaptive training strategy that reuses posteriors for both training and sample selection.
         """
-        DEBUG.log(" Starting adaptive_fit_predict")
+        DEBUG.log("Starting adaptive_fit_predict")
         if not EnableAdaptive:
             print("Adaptive learning is disabled. Using standard training.")
             return self.fit_predict(batch_size=batch_size)
@@ -1673,6 +1859,7 @@ class GPUDBNN:
         train_indices = []
         test_indices = None
         config = self.config
+
         try:
             # Get initial data
             column_names = config['column_names']
@@ -1680,8 +1867,6 @@ class GPUDBNN:
             X = X.drop(columns=[self.target_column])
             y = self.data[self.target_column]
             DEBUG.log(f"Initial data shape: X={X.shape}, y={len(y)}")
-            y = self.data[self.target_column]
-            DEBUG.log(f" Initial data shape: X={X.shape}, y={len(y)}")
 
             # Initialize label encoder if not already done
             if not hasattr(self.label_encoder, 'classes_'):
@@ -1689,10 +1874,6 @@ class GPUDBNN:
 
             # Use existing label encoder
             y_encoded = self.label_encoder.transform(y)
-
-            # Get unique classes
-            unique_classes = torch.unique(torch.tensor(y_encoded, device=self.device))
-            n_classes = len(unique_classes)
 
             # Process features and initialize model components if needed
             X_processed = self._preprocess_data(X, is_training=True)
@@ -1705,159 +1886,32 @@ class GPUDBNN:
             if not hasattr(self, 'test_indices'):
                 self.test_indices = list(range(len(X)))
 
-            # Initialize likelihood parameters if needed
-            if self.likelihood_params is None:
-                DEBUG.log(" Initializing likelihood parameters")
-                print(f"Computing pairwise likelihood for {self.modelType}", end="\r", flush=True)
-                if self.modelType == "Histogram":
-                    self.likelihood_params = self._compute_pairwise_likelihood_parallel(
-                        self.X_tensor, self.y_tensor, self.X_tensor.shape[1]
-                    )
-                elif self.modelType == "Gaussian":
-                    self.likelihood_params = self._compute_pairwise_likelihood_parallel_std(
-                        self.X_tensor, self.y_tensor, self.X_tensor.shape[1]
-                    )
-                print(" Likelihood parameters computed" , end="\r", flush=True)
-
-            # Initialize weights if needed
-            if self.weight_updater is None:
-                DEBUG.log(" Initializing weight updater")
-                self._initialize_bin_weights()
-                DEBUG.log(" Weight updater initialized")
-
-            # Initialize model weights if needed
-            if self.current_W is None:
-                DEBUG.log(" Initializing model weights")
-                n_pairs = len(self.feature_pairs) if self.feature_pairs is not None else 0
-                if n_pairs == 0:
-                    raise ValueError("Feature pairs not initialized")
-                self.current_W = torch.full(
-                    (n_classes, n_pairs),
-                    0.1,
-                    device=self.device,
-                    dtype=torch.float32
-                )
-                if self.best_W is None:
-                    self.best_W = self.current_W.clone()
-
-            # Initialize training set if empty
-            if len(train_indices) == 0:
-                # Select minimum samples from each class for initial training
-                for class_label in unique_classes:
-                    class_indices = np.where(y_encoded == class_label.item())[0]
-                    if len(class_indices) < 2:
-                        selected_indices = class_indices  # Take all available if less than 2
-                    else:
-                        selected_indices = class_indices[:2]  # Take 2 samples from each class
-                    train_indices.extend(selected_indices)
-
-                # Update test indices
-                test_indices = list(set(range(len(X))) - set(train_indices))
-
-            DEBUG.log(f" Initial training set size: {len(train_indices)}")
-            DEBUG.log(f" Initial test set size: {len(test_indices)}")
-
-            # Initialize adaptive learning patience tracking
-            adaptive_patience = 5  # Number of rounds to wait for improvement
-            adaptive_patience_counter = 0
-            best_overall_accuracy = 0
-            best_train_accuracy = 0
-            best_test_accuracy = 0
-
             # Training loop
             for round_num in range(max_rounds):
                 print(f"\nRound {round_num + 1}/{max_rounds}")
                 print(f"Training set size: {len(train_indices)}")
                 print(f"Test set size: {len(test_indices)}")
 
-                # Save indices for this epoch
-                self.save_epoch_data(round_num, train_indices, test_indices)
-
-                # Create feature tensors for training
-                X_train = self.X_tensor[train_indices]
-                y_train = self.y_tensor[train_indices]
-
                 # Train the model
-                save_path = f"round_{round_num}_predictions.csv"
-                self.train_indices = train_indices
-                self.test_indices = test_indices
-                print("Initiating fit_predict model", end="\r", flush=True)
-                results = self.fit_predict(batch_size=batch_size, save_path=save_path)
-                print("Completed fit predict method" , end="\r", flush=True)
-
-                # Check training accuracy
-                train_predictions = self.predict(X_train, batch_size=batch_size)
-                train_accuracy = (train_predictions == y_train.cpu()).float().mean()
-                print(f"Training accuracy: {train_accuracy:.4f}")
-
-                # Get test accuracy from results
-                test_accuracy = results['test_accuracy']
-
-                # Check if we're improving overall
-                improved = False
-                if train_accuracy > best_train_accuracy + improvement_threshold:
-                    best_train_accuracy = train_accuracy
-                    improved = True
-                    print(f"Improved training accuracy to {train_accuracy:.4f}")
-
-                if test_accuracy > best_test_accuracy + improvement_threshold:
-                    best_test_accuracy = test_accuracy
-                    improved = True
-                    print(f"Improved test accuracy to {test_accuracy:.4f}")
-
-                if improved:
-                    adaptive_patience_counter = 0
-                else:
-                    adaptive_patience_counter += 1
-                    print(f"No significant overall improvement. Adaptive patience: {adaptive_patience_counter}/{adaptive_patience}")
-                    if adaptive_patience_counter >= adaptive_patience:
-                        print(f"No improvement in accuracy after {adaptive_patience} rounds of adding samples.")
-                        print(f"Best training accuracy achieved: {best_train_accuracy:.4f}")
-                        print(f"Best test accuracy achieved: {best_test_accuracy:.4f}")
-                        print("Stopping adaptive training.")
-                        break
+                results = self.fit_predict(batch_size=batch_size)
 
                 # Evaluate test data
                 X_test = self.X_tensor[test_indices]
                 y_test = self.y_tensor[test_indices]
-                test_predictions = self.predict(X_test, batch_size=batch_size)
 
-                # Only print test performance header if we didn't just print metrics in fit_predict
-                if not hasattr(self, '_last_metrics_printed') or not self._last_metrics_printed:
-                    print(f"\n{Colors.BLUE}Test Set Performance - Round {round_num + 1}{Colors.ENDC}")
-                    y_test_cpu = y_test.cpu().numpy()
-                    test_predictions_cpu = test_predictions.cpu().numpy()
-                    self.print_colored_confusion_matrix(y_test_cpu, test_predictions_cpu)
+                # Compute posteriors for the test set
+                if self.modelType == "Histogram":
+                    posteriors, _ = self._compute_batch_posterior(X_test)
+                elif self.modelType == "Gaussian":
+                    posteriors, _ = self._compute_batch_posterior_std(X_test)
 
-                # Reset the metrics printed flag
-                self._last_metrics_printed = False
+                # Get predictions from posteriors
+                test_predictions = torch.argmax(posteriors, dim=1).cpu().numpy()
 
-                if train_accuracy == 1.0:
-                    if len(test_indices) == 0:
-                        print("No more test samples available. Training complete.")
-                        break
+                # Select new training examples using the computed posteriors
+                new_train_indices = self._select_samples_from_failed_classes(test_predictions, y_test, test_indices, posteriors)
 
-                    # Get new training samples from misclassified examples
-                    new_train_indices = self._select_samples_from_failed_classes(
-                        test_predictions, y_test, test_indices
-                    )
-
-                    if not new_train_indices:
-                        print("Achieved 100% accuracy on all data. Training complete.")
-                        self.in_adaptive_fit = False
-                        return {'train_indices': [], 'test_indices': []}
-
-                else:
-                    # Training did not achieve 100% accuracy, select new samples
-                    new_train_indices = self._select_samples_from_failed_classes(
-                        test_predictions, y_test, test_indices
-                    )
-
-                    if not new_train_indices:
-                        print("No suitable new samples found. Training complete.")
-                        break
-
-                # Update training and test sets with new samples
+                # Update training and test sets
                 train_indices.extend(new_train_indices)
                 test_indices = list(set(test_indices) - set(new_train_indices))
                 print(f"Added {len(new_train_indices)} new samples to training set")
@@ -1869,88 +1923,10 @@ class GPUDBNN:
             return {'train_indices': train_indices, 'test_indices': test_indices}
 
         except Exception as e:
-            DEBUG.log(f" Error in adaptive_fit_predict: {str(e)}")
-            DEBUG.log(" Traceback:", traceback.format_exc())
+            DEBUG.log(f"Error in adaptive_fit_predict: {str(e)}")
+            DEBUG.log("Traceback:", traceback.format_exc())
             self.in_adaptive_fit = False
             raise
-
-    def _select_samples_from_failed_classes(self, test_predictions, y_test, test_indices):
-        """
-        Select one example per feature group with the highest margin of error.
-        """
-        print("Starting searching for failed examples from each feature group", end="\r", flush=True)
-
-        # Ensure test_predictions and y_test are on the same device
-        if isinstance(test_predictions, torch.Tensor):
-            test_predictions = test_predictions.to(self.device)
-        if isinstance(y_test, torch.Tensor):
-            y_test = y_test.to(self.device)
-
-        # Ensure test_indices is a numpy array of integers
-        test_indices = np.array(test_indices, dtype=int)
-
-        # Create misclassified mask
-        misclassified_mask = (test_predictions != y_test)
-        misclassified_indices = torch.nonzero(misclassified_mask).squeeze()
-
-        # Check if there are any misclassified examples
-        if misclassified_indices.numel() == 0:
-            print("No misclassified examples found.")
-            return []
-
-        # Convert misclassified_indices to a NumPy array for indexing
-        misclassified_indices = misclassified_indices.cpu().numpy()
-
-        # Map misclassified_indices (relative to the test set) to full dataset indices
-        full_dataset_indices = test_indices[misclassified_indices]
-
-        # Initialize a dictionary to store the worst example for each feature group
-        worst_examples = {}
-
-        # Process each feature group
-        for group_idx, feature_group in enumerate(self.feature_pairs):
-            # Ensure feature_group is a tuple of integers
-            feature_group = tuple(int(feat) for feat in feature_group)
-
-            # Get the data for this feature group using the full dataset indices
-            # Step 1: Select rows using full_dataset_indices
-            selected_rows = self.X_tensor[full_dataset_indices]
-            # Step 2: Select columns using feature_group
-            group_data = selected_rows[:, feature_group]
-
-            # Compute posteriors for this feature group
-            print(f"Computing the posteriors for the group {group_idx} for the {self.modelType} model", end="\r", flush=True)
-            if self.modelType == "Histogram":
-                posteriors, _ = self._compute_batch_posterior(group_data)
-            elif self.modelType == "Gaussian":
-                posteriors, _ = self._compute_batch_posterior_std(group_data)
-
-            # Get the true and predicted probabilities for misclassified examples
-            true_probs = posteriors[torch.arange(len(misclassified_indices)), y_test[misclassified_indices]]
-            pred_probs = posteriors[torch.arange(len(misclassified_indices)), test_predictions[misclassified_indices]]
-
-            # Compute the margin of error (difference between predicted and true probabilities)
-            error_margins = pred_probs - true_probs
-
-            # Find the example with the highest margin of error for this feature group
-            worst_example_idx = full_dataset_indices[torch.argmax(error_margins).item()]
-            worst_examples[group_idx] = worst_example_idx
-            print(f"Adding the example at index {worst_example_idx} for the group {group_idx}", end="\r", flush=True)
-
-        # Convert the worst examples to a list of indices
-        selected_indices = list(worst_examples.values())
-
-        # Print selection info
-        print(f"\nSelected {len(selected_indices)} examples (one per feature group) with the highest margin of error.", end="\r", flush=True)
-        for group_idx, idx in worst_examples.items():
-            true_class = y_test[misclassified_indices[full_dataset_indices == idx][0]].item()
-            pred_class = test_predictions[misclassified_indices[full_dataset_indices == idx][0]].item()
-            true_prob = posteriors[torch.where(full_dataset_indices == idx)[0][0], true_class].item()
-            pred_prob = posteriors[torch.where(full_dataset_indices == idx)[0][0], pred_class].item()
-            print(f"Feature Group {group_idx}: Example {idx} (True Class: {true_class}, Pred Class: {pred_class}, "
-                  f"True Prob: {true_prob:.4f}, Pred Prob: {pred_prob:.4f}, Error Margin: {pred_prob - true_prob:.4f})")
-
-        return selected_indices
     #------------------------------------------Adaptive Learning--------------------------------------
 
 
