@@ -1408,7 +1408,7 @@ class CDBNN(GPUDBNN):
     def create_invertible_model(self, reconstruction_weight: float = 0.5, feedback_strength: float = 0.3):
         """Create an invertible DBNN model"""
         if self.invertible_model is None:
-            self.invertible_model = InvertibleCDBNN
+            self.invertible_model = InvertibleCDBNN(
                 forward_model=self,
                 feature_dims=self.data.shape[1] - 1,  # Exclude target column
                 reconstruction_weight=reconstruction_weight,
