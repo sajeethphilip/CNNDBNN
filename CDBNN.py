@@ -26,7 +26,7 @@ from datetime import datetime
 from pathlib import Path
 import pandas as pd
 from tqdm import tqdm
-from adaptive_dbnn import GPUDBNN
+from adaptive_dbnn import GPUDBNN, DBNN
 from adaptive_dbnn import BinWeightUpdater
 from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
@@ -701,7 +701,7 @@ class CNNDBNN(GPUDBNN):
         for class_id, count in self.class_counts.items():
             logger.info(f"Class {class_id}: {count} samples")
 
-class CDBNN(GPUDBNN):
+class CDBNN(DBNN):
     """Custom DBNN class that inherits from GPUDBNN and handles config properly."""
     def __init__(self, dataset_name: str, config: Dict, **kwargs):
         """Initialize the CDBNN class with the given config."""
