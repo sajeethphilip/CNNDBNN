@@ -1244,7 +1244,7 @@ class GPUDBNN:
 
         return balanced_acc
 #---------------------- -------------------------------------DBNN Class -------------------------------
-class CDBNNConfig:
+class DBNNConfig:
     """Configuration class for DBNN parameters"""
     def __init__(self, **kwargs):
         # Training parameters
@@ -1294,10 +1294,10 @@ class CDBNNConfig:
         with open(config_path, 'w') as f:
             json.dump(config_dict, f, indent=2)
 
-class CDBNN(GPUDBNN):
+class DBNN(GPUDBNN):
     """Enhanced DBNN class that builds on GPUDBNN implementation"""
 
-    def __init__(self, config: Optional[Union[CDBNNConfig, dict]] = None,
+    def __init__(self, config: Optional[Union[DBNNConfig, dict]] = None,
                  dataset_name: Optional[str] = None):
 
         """
@@ -1408,7 +1408,7 @@ class CDBNN(GPUDBNN):
     def create_invertible_model(self, reconstruction_weight: float = 0.5, feedback_strength: float = 0.3):
         """Create an invertible DBNN model"""
         if self.invertible_model is None:
-            self.invertible_model = InvertibleCDBNN(
+            self.invertible_model = InvertibleDBNN(
                 forward_model=self,
                 feature_dims=self.data.shape[1] - 1,  # Exclude target column
                 reconstruction_weight=reconstruction_weight,
