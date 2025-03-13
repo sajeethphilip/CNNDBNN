@@ -1297,7 +1297,7 @@ class CDBNNConfig:
 class CDBNN(GPUDBNN):
     """Enhanced DBNN class that builds on GPUDBNN implementation"""
 
-    def __init__(self, config: Optional[Union[DBNNConfig, dict]] = None,
+    def __init__(self, config: Optional[Union[CDBNNConfig, dict]] = None,
                  dataset_name: Optional[str] = None):
 
         """
@@ -1408,7 +1408,7 @@ class CDBNN(GPUDBNN):
     def create_invertible_model(self, reconstruction_weight: float = 0.5, feedback_strength: float = 0.3):
         """Create an invertible DBNN model"""
         if self.invertible_model is None:
-            self.invertible_model = InvertibleDBNN(
+            self.invertible_model = InvertibleCDBNN
                 forward_model=self,
                 feature_dims=self.data.shape[1] - 1,  # Exclude target column
                 reconstruction_weight=reconstruction_weight,
