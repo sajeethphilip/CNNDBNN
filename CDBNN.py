@@ -701,7 +701,7 @@ class CNNDBNN(GPUDBNN):
         for class_id, count in self.class_counts.items():
             logger.info(f"Class {class_id}: {count} samples")
 
-class CDBNN(DBNN):
+class CDBNN(GPUDBNN):
     """Custom DBNN class that inherits from GPUDBNN and handles config properly."""
     def __init__(self, dataset_name: str, config: Dict, **kwargs):
         """Initialize the CDBNN class with the given config."""
