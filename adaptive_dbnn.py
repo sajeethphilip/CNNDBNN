@@ -1244,7 +1244,7 @@ class GPUDBNN:
 
         return balanced_acc
 #---------------------- -------------------------------------DBNN Class -------------------------------
-class DBNNConfig:
+class CDBNNConfig:
     """Configuration class for DBNN parameters"""
     def __init__(self, **kwargs):
         # Training parameters
@@ -1294,7 +1294,7 @@ class DBNNConfig:
         with open(config_path, 'w') as f:
             json.dump(config_dict, f, indent=2)
 
-class DBNN(GPUDBNN):
+class CDBNN(GPUDBNN):
     """Enhanced DBNN class that builds on GPUDBNN implementation"""
 
     def __init__(self, config: Optional[Union[DBNNConfig, dict]] = None,
