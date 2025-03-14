@@ -26,7 +26,7 @@ from datetime import datetime
 from pathlib import Path
 import pandas as pd
 from tqdm import tqdm
-from adaptive_dbnn import GPUDBNN, DBNN
+from adaptive_dbnn import  DBNN
 from adaptive_dbnn import BinWeightUpdater
 from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
@@ -627,7 +627,7 @@ def setup_dbnn_environment(device: str, learning_rate: float,dataset_name=None):
     with open(config_path, 'w') as f:
         json.dump(config, f, indent=4)
 
-class CNNDBNN(GPUDBNN):
+class CNNDBNN(DBNN):
     """DBNN subclass specifically for handling CNN feature extraction outputs."""
 
     def __init__(self, dataset_name: str, feature_dims: int, device: str = 'cuda' if torch.cuda.is_available() else 'cpu'):
@@ -702,7 +702,7 @@ class CNNDBNN(GPUDBNN):
             logger.info(f"Class {class_id}: {count} samples")
 
 class CDBNN(GPUDBNN):
-    """Custom DBNN class that inherits from GPUDBNN and handles config properly."""
+    """Custom DBNN class that inherits from DBNN and handles config properly."""
     def __init__(self, dataset_name: str, config: Dict, **kwargs):
         """Initialize the CDBNN class with the given config."""
         self.dataset_name=dataset_name
