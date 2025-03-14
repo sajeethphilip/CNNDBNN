@@ -1315,19 +1315,22 @@ class DBNN(GPUDBNN):
 
         # First load the dataset configuration
         self.data_config = DatasetConfig.load_config(dataset_name) if dataset_name else None
+        # Ensure dataset_name is provided
+        if dataset_name is None:
+            raise ValueError("dataset_name must be provided.")
 
-        # Map DBNNConfig to GPUDBNN parameters
-
+        # Initialize the base class (GPUDBNN)
         super().__init__(
             dataset_name=dataset_name,
-            learning_rate=config.get("learning_rate", 0.01),
-            max_epochs=config.get("epochs", 1000),
-            test_size=config.get("test_fraction", 0.2),
-            random_state=config.get("random_seed", 42),
-            fresh=config.get("fresh_start", False),
-            use_previous_model=config.get("use_previous_model", True),
-            model_type=config.get("model_type", "Histogram")
+            learning_rate=config.learning_rate,
+            max_epochs=config.epochs,
+            test_size=config.test_fraction,
+            random_state=config.random_seed,
+            fresh=config.fresh_start,
+            use_previous_model=config.use_previous_model,
+            model_type=config.model_type
         )
+
 
 
         # Store model configuration
