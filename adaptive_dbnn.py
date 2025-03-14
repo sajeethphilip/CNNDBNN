@@ -944,7 +944,7 @@ class GPUDBNN:
         # Set dataset_name and model type first
         self.dataset_name = dataset_name
         self.model_type = model_type  # Store model type as instance variable
-        self.device = Train_device
+        self.device = None
         self.computation_cache = ComputationCache(self.device)
         # Initialize train/test indices
         self.train_indices = []
