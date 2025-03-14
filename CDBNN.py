@@ -706,6 +706,7 @@ class CDBNN(DBNN):
     def __init__(self, dataset_name: str, config: Dict, **kwargs):
         """Initialize the CDBNN class with the given config."""
         self.dataset_name=dataset_name
+        self.device=None
         config_path = f"data/{dataset_name}/{dataset_name}.conf"
         if not os.path.exists(config_path):
             raise FileNotFoundError(f"Configuration file not found: {config_path}")
