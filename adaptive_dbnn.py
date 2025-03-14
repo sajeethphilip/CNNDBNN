@@ -1528,22 +1528,30 @@ class DBNN(GPUDBNN):
             'training_results': results
         }
 
-    def _generate_detailed_predictions(self, X: pd.DataFrame) -> pd.DataFrame:
-        """Generate detailed predictions with confidence metrics"""
-        # Get preprocessed features for probability computation
-        X_processed = self._preprocess_data(X, is_training=False)
-        X_tensor = torch.tensor(X_processed, dtype=torch.float32).to(self.device)
+    def _generate_detailed_predictions(self, X: torch.Tensor, predictions: torch.Tensor, true_labels: torch.Tensor, prefix: str = "") -> pd.DataFrame:
+        """Generate detailed predictions with confidence metrics and metadata."""
+        # Convert predictions to original class labels
+        pred_labels = self.label_encoder.inverse_transform(predictions.cpu().numpy())
 
         # Create results DataFrame
-        results_df = self.data.copy()
+        results_df = pd.DataFrame({
+            'true_class': self.label_encoder.inverse_transform(true_labels),
+            'predicted_class': pred_labels
+        })
+
+        # Add metadata
+        results_df['dataset'] = prefix
+        results_df['rejected_columns'] = str(self.high_cardinality_columns)
+        results_df['feature_columns'] = str(self.feature_columns)
+        results_df['target_column'] = self.target_column
 
         # Compute probabilities in batches
         batch_size = self.batch_size
         all_probabilities = []
 
-        for i in range(0, len(X_tensor), batch_size):
-            batch_end = min(i + batch_size, len(X_tensor))
-            batch_X = X_tensor[i:batch_end]
+        for i in range(0, len(X), batch_size):
+            batch_end = min(i + batch_size, len(X))
+            batch_X = X[i:batch_end]
 
             try:
                 if self.model_type == "Histogram":
@@ -1580,12 +1588,6 @@ class DBNN(GPUDBNN):
                 pad_width = ((0, 0), (0, n_classes - probabilities.shape[1]))
                 probabilities = np.pad(probabilities, pad_width, mode='constant')
 
-        # Get predictions
-        predictions = np.argmax(probabilities, axis=1)
-
-        # Convert numeric predictions to original class labels
-        results_df['predicted_class'] = self.label_encoder.inverse_transform(predictions)
-
         # Add probability columns for actual classes used in training
         for i, class_idx in enumerate(unique_classes):
             class_name = self.label_encoder.inverse_transform([class_idx])[0]
@@ -1594,23 +1596,22 @@ class DBNN(GPUDBNN):
         # Add confidence metrics
         results_df['max_probability'] = probabilities.max(axis=1)
 
-        if self.target_column in results_df:
-            # Calculate confidence threshold based on number of classes
-            confidence_threshold = 1.5 / n_classes
+        # Calculate confidence threshold based on number of classes
+        confidence_threshold = 1.5 / n_classes
 
-            # Get true class probabilities
-            true_indices = self.label_encoder.transform(results_df[self.target_column])
-            true_probs = probabilities[np.arange(len(true_indices)), true_indices]
+        # Get true class probabilities
+        true_indices = self.label_encoder.transform(results_df['true_class'])
+        true_probs = probabilities[np.arange(len(true_indices)), true_indices]
 
-            # Add confidence metrics
-            correct_prediction = (predictions == true_indices)
-            prob_diff = results_df['max_probability'] - true_probs
+        # Add confidence metrics
+        correct_prediction = (results_df['predicted_class'] == results_df['true_class'])
+        prob_diff = results_df['max_probability'] - true_probs
 
-            results_df['confidence_verdict'] = np.where(
-                (prob_diff < confidence_threshold) & correct_prediction,
-                'High Confidence',
-                'Low Confidence'
-            )
+        results_df['confidence_verdict'] = np.where(
+            (prob_diff < confidence_threshold) & correct_prediction,
+            'High Confidence',
+            'Low Confidence'
+        )
 
         return results_df
 
@@ -3457,11 +3458,13 @@ class DBNN(GPUDBNN):
                 pass
 
     def print_colored_confusion_matrix(self, y_true, y_pred, class_labels=None):
-        """Print a color-coded confusion matrix with class-wise accuracy."""
+        # Decode numeric labels back to original alphanumeric labels
+        y_true_labels = self.label_encoder.inverse_transform(y_true)
+        y_pred_labels = self.label_encoder.inverse_transform(y_pred)
 
         # Get unique classes from both true and predicted labels
-        unique_true = np.unique(y_true)
-        unique_pred = np.unique(y_pred)
+        unique_true = np.unique(y_true_labels)
+        unique_pred = np.unique(y_pred_labels)
 
         # Use provided class labels or get from label encoder
         if class_labels is None:
@@ -3478,22 +3481,12 @@ class DBNN(GPUDBNN):
         cm = np.zeros((n_classes, n_classes), dtype=int)
 
         # Fill confusion matrix
-        for t, p in zip(y_true, y_pred):
+        for t, p in zip(y_true_labels, y_pred_labels):
             if t in class_to_idx and p in class_to_idx:
                 cm[class_to_idx[t], class_to_idx[p]] += 1
 
-        # Calculate class-wise accuracy
-        class_accuracy = {}
-        for i in range(n_classes):
-            if cm[i].sum() > 0:  # Avoid division by zero
-                class_accuracy[i] = cm[i, i] / cm[i].sum()
-            else:
-                class_accuracy[i] = 0.0
-
-        # Print header
+        # Print confusion matrix with colors
         print(f"{Colors.BOLD}Confusion Matrix and Class-wise Accuracy:{Colors.ENDC}")
-
-        # Print class labels header
         print(f"{'Actual/Predicted':<15}", end='')
         for label in all_classes:
             print(f"{str(label):<8}", end='')
@@ -3516,7 +3509,7 @@ class DBNN(GPUDBNN):
                 print(f"{color}{cm[i, j]:<8}{Colors.ENDC}", end='')
 
             # Print class accuracy with color based on performance
-            acc = class_accuracy[i]
+            acc = cm[i, i] / cm[i].sum() if cm[i].sum() > 0 else 0.0
             if acc >= 0.9:
                 color = Colors.GREEN
             elif acc >= 0.7:
@@ -3533,30 +3526,6 @@ class DBNN(GPUDBNN):
             print("-" * (15 + 8 * n_classes + 10))
             color = Colors.GREEN if overall_acc >= 0.9 else Colors.YELLOW if overall_acc >= 0.7 else Colors.BLUE
             print(f"{Colors.BOLD}Overall Accuracy: {color}{overall_acc:.2%}{Colors.ENDC}")
-
-        # Save confusion matrix to file
-        try:
-            plt.figure(figsize=(10, 8))
-            sns.heatmap(
-                cm,
-                annot=True,
-                fmt='d',
-                cmap='Blues',
-                xticklabels=all_classes,
-                yticklabels=all_classes
-            )
-            plt.title('Confusion Matrix')
-            plt.ylabel('True Label')
-            plt.xlabel('Predicted Label')
-
-            # Save with dataset name
-            if hasattr(self, 'dataset_name'):
-                plt.savefig(f'confusion_matrix_{self.dataset_name}.png')
-            else:
-                plt.savefig('confusion_matrix.png')
-            plt.close()
-        except Exception as e:
-            print(f"Warning: Could not save confusion matrix plot: {str(e)}")
 
     def train(self, X_train: torch.Tensor, y_train: torch.Tensor, X_test: torch.Tensor, y_test: torch.Tensor, batch_size: int = 32):
         """Training loop with proper weight handling and enhanced progress tracking"""
@@ -4243,6 +4212,7 @@ class DBNN(GPUDBNN):
                 self.bin_edges = self.best_round_initial_conditions['bin_edges']
                 self.gaussian_params = self.best_round_initial_conditions['gaussian_params']
 
+
             # Handle data preparation based on whether we're in adaptive training or final evaluation
             if self.in_adaptive_fit:
                 if not hasattr(self, 'X_tensor') or not hasattr(self, 'y_tensor'):
@@ -4308,29 +4278,60 @@ class DBNN(GPUDBNN):
             self._save_categorical_encoders()
 
             # Make predictions
-            print(f"{Colors.YELLOW}Predctions on Test data{Colors.ENDC}", end="\r", flush=True)
-            y_pred = self.predict(X_test, batch_size=batch_size)
+            # Generate predictions for train, test, and combined datasets
+            print(f"{Colors.YELLOW}Generating predictions for train, test, and combined datasets{Colors.ENDC}")
 
-            # Verify prediction size matches test set
-            if y_pred.size(0) != y_test.size(0):
-                raise ValueError(f"Prediction size mismatch. Predictions: {y_pred.size(0)}, Test set: {y_test.size(0)}")
+            # Predictions for train set
+            train_predictions = self.predict(X_train, batch_size=batch_size)
+            train_results = self._generate_detailed_predictions(X_train, train_predictions, y_train, prefix="train")
+            # Print colored confusion matrix
+            self.print_colored_confusion_matrix(y_train.cpu().numpy(), train_predictions.cpu().numpy())
 
-            # Save predictions if path is provided
+            # Predictions for test set
+            test_predictions = self.predict(X_test, batch_size=batch_size)
+            test_results = self._generate_detailed_predictions(X_test, test_predictions, y_test, prefix="test")
+            # Print colored confusion matrix
+            self.print_colored_confusion_matrix(y_test.cpu().numpy(), test_predictions.cpu().numpy())
+
+            # Verify prediction size matches test set (existing code)
+            if test_predictions.size(0) != y_test.size(0):
+                raise ValueError(f"Prediction size mismatch. Predictions: {test_predictions.size(0)}, Test set: {y_test.size(0)}")
+
+
+            # Predictions for combined dataset
+            combined_X = torch.cat([X_train, X_test], dim=0)
+            combined_y = torch.cat([y_train, y_test], dim=0)
+            combined_predictions = self.predict(combined_X, batch_size=batch_size)
+            combined_results = self._generate_detailed_predictions(combined_X, combined_predictions, combined_y, prefix="combined")
+
+            # Include metadata in the output
+            metadata = {
+                'rejected_columns': self.high_cardinality_columns,
+                'feature_columns': self.feature_columns,
+                'target_column': self.target_column,
+                'preprocessing_details': {
+                    'cardinality_threshold': self.cardinality_threshold,
+                    'cardinality_tolerance': self.cardinality_tolerance,
+                    'categorical_columns': list(self.categorical_encoders.keys())
+                }
+            }
+
+
+            # Save results if path is provided
             if save_path:
-                if self.in_adaptive_fit:
-                    # Get corresponding rows from original DataFrame for test set
-                    X_test_df = self.data.drop(columns=[self.target_column]).iloc[self.test_indices]
-                    y_test_series = self.data[self.target_column].iloc[self.test_indices]
-                else:
-                    X_test_indices = range(len(X_test))
-                    X_test_df = X.iloc[X_test_indices]
-                    y_test_series = y.iloc[X_test_indices]
+                # Save train predictions
+                train_results.to_csv(f"{save_path}_train_predictions.csv", index=False)
+                # Save test predictions
+                test_results.to_csv(f"{save_path}_test_predictions.csv", index=False)
+                # Save combined predictions
+                combined_results.to_csv(f"{save_path}_combined_predictions.csv", index=False)
+                # Save metadata
+                with open(f"{save_path}_metadata.json", 'w') as f:
+                    json.dump(metadata, f, indent=4)
 
-                self.save_predictions(X_test_df, y_pred, save_path, y_test_series)
-
-            # Calculate metrics
+            # Calculate metrics for test set (existing code)
             y_test_cpu = y_test.cpu().numpy()
-            y_pred_cpu = y_pred.cpu().numpy()
+            y_pred_cpu = test_predictions.cpu().numpy()
 
             # Convert numerical labels back to original classes
             y_test_labels = self.label_encoder.inverse_transform(y_test_cpu)
@@ -4338,6 +4339,10 @@ class DBNN(GPUDBNN):
 
             # Prepare results
             results = {
+                'train_predictions': train_results,
+                'test_predictions': test_results,
+                'combined_predictions': combined_results,
+                'metadata': metadata,
                 'classification_report': classification_report(y_test_labels, y_pred_labels),
                 'confusion_matrix': confusion_matrix(y_test_labels, y_pred_labels),
                 'error_rates': error_rates,
@@ -4352,6 +4357,7 @@ class DBNN(GPUDBNN):
             DEBUG.log(f"Error in fit_predict: {str(e)}")
             DEBUG.log(f"Traceback: {traceback.format_exc()}")
             raise
+
 
     def _get_model_components_filename(self):
         """Get filename for model components"""
