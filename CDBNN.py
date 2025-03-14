@@ -762,7 +762,7 @@ class CDBNN(DBNN):
             # Process features and initialize model components if needed
             X_processed = self._preprocess_data(X, is_training=True)
             self.X_tensor = X_processed.to(self.device)
-            self.y_tensor = y_encoded.to(self.device)
+            self.y_tensor = torch.LongTensor(y_encoded).to(self.device)
 
             # Initialize train/test indices if not already set
             if not hasattr(self, 'train_indices'):
