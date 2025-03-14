@@ -4596,8 +4596,6 @@ class DBNN(GPUDBNN):
             print(f"[DEBUG] Model components file not found: {components_file}", end="\r", flush=True)
         return False
 
-
-
     def predict_and_save(self, save_path=None, batch_size: int = 32):
         """Make predictions on data and save them using best model weights"""
         try:
