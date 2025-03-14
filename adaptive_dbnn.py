@@ -1465,7 +1465,7 @@ class DBNN(GPUDBNN):
 
         # Create output directory structure
         dataset_name = os.path.splitext(os.path.basename(self.data_config['file_path']))[0]
-        output_dir = os.path.join(self.model_config.training_data_dir, dataset_name)
+        output_dir = os.path.join(self.model_config.training_data_dir, dataset_name, 'Predictions')
         os.makedirs(output_dir, exist_ok=True)
 
         # Update dataset name
@@ -1493,6 +1493,9 @@ class DBNN(GPUDBNN):
             'training_time'
         ])
 
+        # Initialize results DataFrame with original data
+        results_df = self.data.copy()
+
         # Train model using existing GPUDBNN methods
         if self.model_config.enable_adaptive:
             results = self.adaptive_fit_predict(max_rounds=self.model_config.epochs)
@@ -1507,12 +1510,16 @@ class DBNN(GPUDBNN):
         predictions = self.predict(X_tensor, batch_size=self.batch_size)
         true_labels = y_tensor.cpu().numpy()
 
-        # Generate detailed predictions
-        predictions_df = self._generate_detailed_predictions(X_tensor, predictions, true_labels)
+        # Generate detailed predictions for this round
+        round_num = 0  # Assuming this is round 0
+        predictions_df = self._generate_detailed_predictions(X_tensor, predictions, true_labels, round_num, prefix="train")
+
+        # Append predictions to results DataFrame
+        results_df = pd.concat([results_df, predictions_df[[f'train_round_{round_num}', f'train_round_{round_num}_prob']]], axis=1)
 
         # Save results
         results_path = os.path.join(output_dir, f'{dataset_name}_predictions.csv')
-        predictions_df.to_csv(results_path, index=False)
+        results_df.to_csv(results_path, index=False)
 
         # Save training log
         self.training_log.to_csv(log_file, index=False)
@@ -1530,8 +1537,8 @@ class DBNN(GPUDBNN):
             'training_results': results
         }
 
-    def _generate_detailed_predictions(self, X: torch.Tensor, predictions: torch.Tensor, true_labels, prefix: str = "") -> pd.DataFrame:
-        """Generate detailed predictions with confidence metrics and metadata."""
+    def _generate_detailed_predictions(self, X: torch.Tensor, predictions: torch.Tensor, true_labels, round_num: int, prefix: str = "") -> pd.DataFrame:
+        """Generate detailed predictions with confidence metrics and metadata for a specific round."""
         # Ensure predictions and true_labels are on the CPU
         predictions = predictions.cpu() if torch.is_tensor(predictions) else torch.tensor(predictions)
         true_labels = true_labels.cpu() if torch.is_tensor(true_labels) else torch.tensor(true_labels)
@@ -1539,17 +1546,12 @@ class DBNN(GPUDBNN):
         # Convert predictions to original class labels
         pred_labels = self.label_encoder.inverse_transform(predictions.numpy())
 
-        # Create results DataFrame
-        results_df = pd.DataFrame({
-            'true_class': self.label_encoder.inverse_transform(true_labels.numpy()),
-            'predicted_class': pred_labels
-        })
+        # Create a copy of the original dataset to preserve all columns
+        results_df = self.data.copy()
 
-        # Add metadata
-        results_df['dataset'] = prefix
-        results_df['rejected_columns'] = str(self.high_cardinality_columns)
-        results_df['feature_columns'] = str(self.feature_columns)
-        results_df['target_column'] = self.target_column
+        # Add prediction columns for this round
+        results_df[f'{prefix}_round_{round_num}'] = pred_labels
+        results_df[f'{prefix}_round_{round_num}_prob'] = np.nan  # Initialize probability column
 
         # Compute probabilities in batches
         batch_size = self.batch_size
@@ -1579,47 +1581,11 @@ class DBNN(GPUDBNN):
             print("No probabilities were computed successfully")
             return None
 
-        # Get actual classes used in training
-        unique_classes = np.unique(self.label_encoder.transform(self.data[self.target_column]))
-        n_classes = len(unique_classes)
-
-        # Verify probability array shape
-        if probabilities.shape[1] != n_classes:
-            print(f"Warning: Probability array shape ({probabilities.shape}) doesn't match number of classes ({n_classes})")
-            # Adjust probabilities array if necessary
-            if probabilities.shape[1] > n_classes:
-                probabilities = probabilities[:, :n_classes]
-            else:
-                # Pad with zeros if needed
-                pad_width = ((0, 0), (0, n_classes - probabilities.shape[1]))
-                probabilities = np.pad(probabilities, pad_width, mode='constant')
-
-        # Add probability columns for actual classes used in training
-        for i, class_idx in enumerate(unique_classes):
-            class_name = self.label_encoder.inverse_transform([class_idx])[0]
-            results_df[f'prob_{class_name}'] = probabilities[:, i]
-
-        # Add confidence metrics
-        results_df['max_probability'] = probabilities.max(axis=1)
-
-        # Calculate confidence threshold based on number of classes
-        confidence_threshold = 1.5 / n_classes
-
-        # Get true class probabilities
-        true_indices = self.label_encoder.transform(results_df['true_class'])
-        true_probs = probabilities[np.arange(len(true_indices)), true_indices]
-
-        # Add confidence metrics
-        correct_prediction = (results_df['predicted_class'] == results_df['true_class'])
-        prob_diff = results_df['max_probability'] - true_probs
-
-        results_df['confidence_verdict'] = np.where(
-            (prob_diff < confidence_threshold) & correct_prediction,
-            'High Confidence',
-            'Low Confidence'
-        )
+        # Add probabilities to the results DataFrame
+        results_df.loc[X.index, f'{prefix}_round_{round_num}_prob'] = probabilities.max(axis=1)
 
         return results_df
+
 
 
     def _update_training_log(self, round_num: int, metrics: Dict):
