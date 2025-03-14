@@ -1320,6 +1320,7 @@ class DBNN(GPUDBNN):
             raise ValueError("dataset_name must be provided.")
 
         # Initialize the base class (GPUDBNN)
+        # Initialize the base class (GPUDBNN)
         super().__init__(
             dataset_name=dataset_name,
             learning_rate=config.learning_rate,
@@ -1328,9 +1329,9 @@ class DBNN(GPUDBNN):
             random_state=config.random_seed,
             fresh=config.fresh_start,
             use_previous_model=config.use_previous_model,
-            model_type=config.model_type
+            model_type=config.model_type,
+            device=device  # Pass the device parameter to GPUDBNN
         )
-
 
 
         # Store model configuration
