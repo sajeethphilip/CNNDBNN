@@ -2107,6 +2107,7 @@ class DBNN(GPUDBNN):
             print(f" Initial data shape: X={X.shape}, y={len(y)}")
             print(f"Number of classes in data = {np.unique(y)}")
             print(self.data.head)
+
             # Initialize label encoder if not already done
             if not hasattr(self.label_encoder, 'classes_'):
                 self.label_encoder.fit(y)
@@ -2116,7 +2117,7 @@ class DBNN(GPUDBNN):
 
             # Process features and initialize model components if needed
             X_processed = self._preprocess_data(X, is_training=True)
-            self.X_tensor =  X_processed.clone().detach().to(self.device)
+            self.X_tensor = X_processed.clone().detach().to(self.device)
             self.y_tensor = torch.LongTensor(y_encoded).to(self.device)
 
             # Handle model state based on flags
@@ -2161,208 +2162,230 @@ class DBNN(GPUDBNN):
                     else:
                         print("No previous model found - starting fresh")
 
-                if not model_loaded:
-                    print("Initializing fresh model")
-                    self._clean_existing_model()
-                    train_indices = []
-                    test_indices = list(range(len(X)))
+            if not model_loaded:
+                print("Initializing fresh model")
+                self._clean_existing_model()
+                train_indices = []
+                test_indices = list(range(len(X)))
 
-                    # Initialize feature pairs for fresh start
-                    self.feature_pairs = self._generate_feature_combinations(
-                        self.X_tensor.shape[1],
-                        self.config.get('likelihood_config', {}).get('feature_group_size', 2),
-                        self.config.get('likelihood_config', {}).get('max_combinations', None)
+                # Initialize feature pairs for fresh start
+                self.feature_pairs = self._generate_feature_combinations(
+                    self.X_tensor.shape[1],
+                    self.config.get('likelihood_config', {}).get('feature_group_size', 2),
+                    self.config.get('likelihood_config', {}).get('max_combinations', None)
+                )
+
+            # Initialize test indices if still None
+            if test_indices is None:
+                test_indices = list(range(len(X)))
+
+            # Initialize likelihood parameters if needed
+            if self.likelihood_params is None:
+                DEBUG.log(" Initializing likelihood parameters")
+                if self.model_type == "Histogram":
+                    self.likelihood_params = self._compute_pairwise_likelihood_parallel(
+                        self.X_tensor, self.y_tensor, self.X_tensor.shape[1]
+                    )
+                elif self.model_type == "Gaussian":
+                    self.likelihood_params = self._compute_pairwise_likelihood_parallel_std(
+                        self.X_tensor, self.y_tensor, self.X_tensor.shape[1]
+                    )
+                DEBUG.log(" Likelihood parameters computed")
+
+            # Initialize weights if needed
+            if self.weight_updater is None:
+                DEBUG.log(" Initializing weight updater")
+                self._initialize_bin_weights()
+                DEBUG.log(" Weight updater initialized")
+
+            # Initialize model weights if needed
+            if self.current_W is None:
+                DEBUG.log(" Initializing model weights")
+                n_classes = len(self.label_encoder.classes_)
+                n_pairs = len(self.feature_pairs) if self.feature_pairs is not None else 0
+                if n_pairs == 0:
+                    raise ValueError("Feature pairs not initialized")
+                self.current_W = torch.full(
+                    (n_classes, n_pairs),
+                    0.1,
+                    device=self.device,
+                    dtype=torch.float32
+                )
+                if self.best_W is None:
+                    self.best_W = self.current_W.clone()
+
+            # Initialize training set if empty
+            if len(train_indices) == 0:
+                print("Initializing new training set with minimum samples")
+                # Select minimum samples from each class for initial training
+                unique_classes = self.label_encoder.classes_
+                for class_label in unique_classes:
+                    class_indices = np.where(y_encoded == self.label_encoder.transform([class_label])[0])[0]
+                    if len(class_indices) < 2:
+                        selected_indices = class_indices
+                    else:
+                        selected_indices = class_indices[:2]
+                    train_indices.extend(selected_indices)
+
+                # Update test indices
+                test_indices = list(set(range(len(X))) - set(train_indices))
+
+            DEBUG.log(f" Initial training set size: {len(train_indices)}")
+            DEBUG.log(f" Initial test set size: {len(test_indices)}")
+
+            # Create the output directory for predictions
+            dataset_name = os.path.splitext(os.path.basename(self.dataset_name))[0]
+            output_dir = os.path.join('data', dataset_name, 'Predictions')
+            os.makedirs(output_dir, exist_ok=True)
+
+            # Initialize prediction DataFrames for train, test, and combined datasets
+            train_predictions_df = self.data.copy()
+            test_predictions_df = self.data.copy()
+            combined_predictions_df = self.data.copy()
+
+            # Continue with training loop...
+            for round_num in range(max_rounds):
+                print(f"Round {round_num + 1}/{max_rounds}")
+                print(f"Training set size: {len(train_indices)}")
+                print(f"Test set size: {len(test_indices)}")
+
+                # Save indices for this epoch
+                self.save_epoch_data(round_num, train_indices, test_indices)
+
+                # Create feature tensors for training
+                X_train = self.X_tensor[train_indices]
+                y_train = self.y_tensor[train_indices]
+
+                # Train the model
+                save_path = f"round_{round_num}_predictions.csv"
+                self.train_indices = train_indices
+                self.test_indices = test_indices
+                results = self.fit_predict(batch_size=batch_size, save_path=save_path)
+
+                # Check training accuracy
+                print(f"{Colors.GREEN}Predictions on Training data{Colors.ENDC}", end="\r", flush=True)
+                train_predictions = self.predict(X_train, batch_size=batch_size)
+                train_accuracy = (train_predictions == y_train.cpu()).float().mean()
+                print(f"Training accuracy: {train_accuracy:.4f}")
+
+                # Get test accuracy from results
+                test_accuracy = results['test_accuracy']
+
+                # Check if we're improving overall
+                improved = False
+                if 'best_train_accuracy' not in locals():
+                    best_train_accuracy = train_accuracy
+                    improved = True
+                elif train_accuracy > best_train_accuracy + 0.001:  # Improvement threshold
+                    best_train_accuracy = train_accuracy
+                    improved = True
+                    print(f"Improved training accuracy to {train_accuracy:.4f}")
+
+                if 'best_test_accuracy' not in locals():
+                    best_test_accuracy = test_accuracy
+                    improved = True
+                elif test_accuracy > best_test_accuracy + 0.001:  # Improvement threshold
+                    best_test_accuracy = test_accuracy
+                    improved = True
+                    print(f"Improved test accuracy to {test_accuracy:.4f}")
+
+                # Reset adaptive patience if improved
+                if improved:
+                    adaptive_patience_counter = 0
+                else:
+                    adaptive_patience_counter += 1
+                    print(f"No significant overall improvement. Adaptive patience: {adaptive_patience_counter}/5")
+                    if adaptive_patience_counter >= 5:  # Using fixed value of 5 for adaptive patience
+                        print(f"No improvement in accuracy after 5 rounds of adding samples.")
+                        print(f"Best training accuracy achieved: {best_train_accuracy:.4f}")
+                        print(f"Best test accuracy achieved: {best_test_accuracy:.4f}")
+                        print("Stopping adaptive training.")
+                        break
+
+                # Evaluate test data
+                X_test = self.X_tensor[test_indices]
+                y_test = self.y_tensor[test_indices]
+                print(f"{Colors.YELLOW}Predictions on Test data{Colors.ENDC}", end="\r", flush=True)
+                test_predictions = self.predict(X_test, batch_size=batch_size)
+
+                # Only print test performance header if we didn't just print metrics in fit_predict
+                if not hasattr(self, '_last_metrics_printed') or not self._last_metrics_printed:
+                    print(f"{Colors.BLUE}Test Set Performance - Round {round_num + 1}{Colors.ENDC}")
+                    y_test_cpu = y_test.cpu().numpy()
+                    test_predictions_cpu = test_predictions.cpu().numpy()
+                    # Generate classification report and confusion matrix
+                    classification_report_str = classification_report(y_test_cpu, test_predictions_cpu)
+                    self.print_colored_confusion_matrix(y_test_cpu, test_predictions_cpu)
+
+                # Reset the metrics printed flag
+                self._last_metrics_printed = False
+
+                # Check if we've achieved perfect accuracy
+                if train_accuracy == 1.0:
+                    if len(test_indices) == 0:
+                        print("No more test samples available. Training complete.")
+                        break
+
+                    # Get new training samples from misclassified examples
+                    new_train_indices = self._select_samples_from_failed_classes(
+                        test_predictions, y_test, test_indices
                     )
 
-                # Initialize test indices if still None
-                if test_indices is None:
-                    test_indices = list(range(len(X)))
+                    if not new_train_indices:
+                        print("Achieved 100% accuracy on all data. Training complete.")
+                        self.in_adaptive_fit = False
+                        return {'train_indices': [], 'test_indices': []}
 
-                # Initialize likelihood parameters if needed
-                if self.likelihood_params is None:
-                    DEBUG.log(" Initializing likelihood parameters")
-                    if self.model_type == "Histogram":
-                        self.likelihood_params = self._compute_pairwise_likelihood_parallel(
-                            self.X_tensor, self.y_tensor, self.X_tensor.shape[1]
-                        )
-                    elif self.model_type == "Gaussian":
-                        self.likelihood_params = self._compute_pairwise_likelihood_parallel_std(
-                            self.X_tensor, self.y_tensor, self.X_tensor.shape[1]
-                        )
-                    DEBUG.log(" Likelihood parameters computed")
-
-                # Initialize weights if needed
-                if self.weight_updater is None:
-                    DEBUG.log(" Initializing weight updater")
-                    self._initialize_bin_weights()
-                    DEBUG.log(" Weight updater initialized")
-
-                # Initialize model weights if needed
-                if self.current_W is None:
-                    DEBUG.log(" Initializing model weights")
-                    n_classes = len(self.label_encoder.classes_)
-                    n_pairs = len(self.feature_pairs) if self.feature_pairs is not None else 0
-                    if n_pairs == 0:
-                        raise ValueError("Feature pairs not initialized")
-                    self.current_W = torch.full(
-                        (n_classes, n_pairs),
-                        0.1,
-                        device=self.device,
-                        dtype=torch.float32
+                else:
+                    # Training did not achieve 100% accuracy, select new samples
+                    new_train_indices = self._select_samples_from_failed_classes(
+                        test_predictions, y_test, test_indices
                     )
-                    if self.best_W is None:
-                        self.best_W = self.current_W.clone()
 
-                # Initialize training set if empty
-                if len(train_indices) == 0:
-                    print("Initializing new training set with minimum samples")
-                    # Select minimum samples from each class for initial training
-                    unique_classes = self.label_encoder.classes_
-                    for class_label in unique_classes:
-                        class_indices = np.where(y_encoded == self.label_encoder.transform([class_label])[0])[0]
-                        if len(class_indices) < 2:
-                            selected_indices = class_indices
-                        else:
-                            selected_indices = class_indices[:2]
-                        train_indices.extend(selected_indices)
+                    if not new_train_indices:
+                        print("No suitable new samples found. Training complete.")
+                        break
 
-                    # Update test indices
-                    test_indices = list(set(range(len(X))) - set(train_indices))
+                if new_train_indices:
+                    # Reset to the best round's initial conditions
+                    if self.best_round_initial_conditions is not None:
+                        print(f"Resetting to initial conditions of best round {self.best_round}")
+                        self.current_W = self.best_round_initial_conditions['weights'].clone()
+                        self.likelihood_params = self.best_round_initial_conditions['likelihood_params']
+                        self.feature_pairs = self.best_round_initial_conditions['feature_pairs']
+                        self.bin_edges = self.best_round_initial_conditions['bin_edges']
+                        self.gaussian_params = self.best_round_initial_conditions['gaussian_params']
 
-                DEBUG.log(f" Initial training set size: {len(train_indices)}")
-                DEBUG.log(f" Initial test set size: {len(test_indices)}")
+                # Update training and test sets with new samples
+                train_indices.extend(new_train_indices)
+                test_indices = list(set(test_indices) - set(new_train_indices))
+                print(f"Added {len(new_train_indices)} new samples to training set")
 
-                # Continue with training loop...
-                for round_num in range(max_rounds):
-                    print(f"Round {round_num + 1}/{max_rounds}")
-                    print(f"Training set size: {len(train_indices)}")
-                    print(f"Test set size: {len(test_indices)}")
+                # Save the current split
+                self.save_last_split(train_indices, test_indices)
 
-                    # Save indices for this epoch
-                    self.save_epoch_data(round_num, train_indices, test_indices)
+                # Save predictions for this round
+                train_predictions_df[f'round_{round_num}'] = pd.Series(train_predictions.cpu().numpy(), index=train_predictions_df.index)
+                test_predictions_df[f'round_{round_num}'] = pd.Series(test_predictions.cpu().numpy(), index=test_predictions_df.index)
+                combined_predictions_df[f'round_{round_num}'] = pd.Series(
+                    np.concatenate([train_predictions.cpu().numpy(), test_predictions.cpu().numpy()]),
+                    index=combined_predictions_df.index
+                )
 
-                    # Create feature tensors for training
-                    X_train = self.X_tensor[train_indices]
-                    y_train = self.y_tensor[train_indices]
+                # Save prediction files
+                train_predictions_df.to_csv(os.path.join(output_dir, f'train_predictions.csv'), index=False)
+                test_predictions_df.to_csv(os.path.join(output_dir, f'test_predictions.csv'), index=False)
+                combined_predictions_df.to_csv(os.path.join(output_dir, f'combined_predictions.csv'), index=False)
 
-                    # Train the model
-                    save_path = f"round_{round_num}_predictions.csv"
-                    self.train_indices = train_indices
-                    self.test_indices = test_indices
-                    results = self.fit_predict(batch_size=batch_size, save_path=save_path)
+            self.in_adaptive_fit = False
+            return {'train_indices': train_indices, 'test_indices': test_indices}
 
-                    # Check training accuracy
-                    print(f"{Colors.GREEN}Predctions on Training data{Colors.ENDC}", end="\r", flush=True)
-                    train_predictions = self.predict(X_train, batch_size=batch_size)
-                    train_accuracy = (train_predictions == y_train.cpu()).float().mean()
-                    print(f"Training accuracy: {train_accuracy:.4f}")
+        except Exception as e:
+            DEBUG.log(f" Error in adaptive_fit_predict: {str(e)}")
+            DEBUG.log(" Traceback:", traceback.format_exc())
+            self.in_adaptive_fit = False
+            raise
 
-                    # Get test accuracy from results
-                    test_accuracy = results['test_accuracy']
-
-                    # Check if we're improving overall
-                    improved = False
-                    if 'best_train_accuracy' not in locals():
-                        best_train_accuracy = train_accuracy
-                        improved = True
-                    elif train_accuracy > best_train_accuracy + improvement_threshold:
-                        best_train_accuracy = train_accuracy
-                        improved = True
-                        print(f"Improved training accuracy to {train_accuracy:.4f}")
-
-                    if 'best_test_accuracy' not in locals():
-                        best_test_accuracy = test_accuracy
-                        improved = True
-                    elif test_accuracy > best_test_accuracy + improvement_threshold:
-                        best_test_accuracy = test_accuracy
-                        improved = True
-                        print(f"Improved test accuracy to {test_accuracy:.4f}")
-
-                    # Reset adaptive patience if improved
-                    if improved:
-                        adaptive_patience_counter = 0
-                    else:
-                        adaptive_patience_counter += 1
-                        print(f"No significant overall improvement. Adaptive patience: {adaptive_patience_counter}/5")
-                        if adaptive_patience_counter >= 5:  # Using fixed value of 5 for adaptive patience
-                            print(f"No improvement in accuracy after 5 rounds of adding samples.")
-                            print(f"Best training accuracy achieved: {best_train_accuracy:.4f}")
-                            print(f"Best test accuracy achieved: {best_test_accuracy:.4f}")
-                            print("Stopping adaptive training.")
-                            break
-
-                    # Evaluate test data
-                    X_test = self.X_tensor[test_indices]
-                    y_test = self.y_tensor[test_indices]
-                    print(f"{Colors.YELLOW}Predctions on Test data{Colors.ENDC}", end="\r", flush=True)
-                    test_predictions = self.predict(X_test, batch_size=batch_size)
-
-                    # Only print test performance header if we didn't just print metrics in fit_predict
-                    if not hasattr(self, '_last_metrics_printed') or not self._last_metrics_printed:
-                        print(f"{Colors.BLUE}Test Set Performance - Round {round_num + 1}{Colors.ENDC}")
-                        y_test_cpu = y_test.cpu().numpy()
-                        test_predictions_cpu = test_predictions.cpu().numpy()
-                        # Generate classification report and confusion matrix
-                        classification_report_str = classification_report(y_test_cpu, y_pred_cpu)
-                        self.print_colored_confusion_matrix(y_test_cpu, test_predictions_cpu)
-
-                    # Reset the metrics printed flag
-                    self._last_metrics_printed = False
-
-                    # Check if we've achieved perfect accuracy
-                    if train_accuracy == 1.0:
-                        if len(test_indices) == 0:
-                            print("No more test samples available. Training complete.")
-                            break
-
-                        # Get new training samples from misclassified examples
-                        new_train_indices = self._select_samples_from_failed_classes(
-                            test_predictions, y_test, test_indices
-                        )
-
-                        if not new_train_indices:
-                            print("Achieved 100% accuracy on all data. Training complete.                                           ")
-                            self.in_adaptive_fit = False
-                            return {'train_indices': [], 'test_indices': []}
-
-                    else:
-                        # Training did not achieve 100% accuracy, select new samples
-                        new_train_indices = self._select_samples_from_failed_classes(
-                            test_predictions, y_test, test_indices
-                        )
-
-                        if not new_train_indices:
-                            print("No suitable new samples found. Training complete.")
-                            break
-
-
-                    if new_train_indices:
-                        # Reset to the best round's initial conditions
-                        if self.best_round_initial_conditions is not None:
-                            print(f"Resetting to initial conditions of best round {self.best_round}")
-                            self.current_W = self.best_round_initial_conditions['weights'].clone()
-                            self.likelihood_params = self.best_round_initial_conditions['likelihood_params']
-                            self.feature_pairs = self.best_round_initial_conditions['feature_pairs']
-                            self.bin_edges = self.best_round_initial_conditions['bin_edges']
-                            self.gaussian_params = self.best_round_initial_conditions['gaussian_params']
-
-
-                    # Update training and test sets with new samples
-                    train_indices.extend(new_train_indices)
-                    test_indices = list(set(test_indices) - set(new_train_indices))
-                    print(f"Added {len(new_train_indices)} new samples to training set")
-
-                    # Save the current split
-                    self.save_last_split(train_indices, test_indices)
-
-                self.in_adaptive_fit = False
-                return {'train_indices': train_indices, 'test_indices': test_indices}
-
-            except Exception as e:
-                DEBUG.log(f" Error in adaptive_fit_predict: {str(e)}")
-                DEBUG.log(" Traceback:", traceback.format_exc())
-                self.in_adaptive_fit = False
-                raise
 
 
     #------------------------------------------Adaptive Learning--------------------------------------
