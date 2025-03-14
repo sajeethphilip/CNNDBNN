@@ -719,6 +719,7 @@ class CDBNN(DBNN):
             raise KeyError("'training_save_path' not found in configuration.")
         self.target_column = self.config['target_column']
         self.training_save_path = self.config['training_params']['training_save_path']
+        print(self.config)
          # Initialize the base class (DBNN) with config and dataset_name
         super().__init__(config=self.config, dataset_name=dataset_name, **kwargs)
 
