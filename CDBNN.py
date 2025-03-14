@@ -714,7 +714,8 @@ class CDBNN(DBNN):
             self.config = json.load(f)
         self.target_column = self.config['target_column']
         self.training_save_path = self.config['training_params']['training_save_path']
-        super().__init__(dataset_name)
+         # Initialize the base class (DBNN) with config and dataset_name
+        super().__init__(config=self.config, dataset_name=dataset_name, **kwargs)
 
     def adaptive_fit_predict(self, max_rounds: int = 10,
                             improvement_threshold: float = 0.001,
