@@ -1502,8 +1502,8 @@ class DBNN(GPUDBNN):
             traceback.print_exc()
             return None
 
-    def _generate_detailed_predictions(self, X: torch.Tensor, predictions: torch.Tensor, true_labels: torch.Tensor, prefix: str = "", round_num: int = 0) -> pd.DataFrame:
-        """Generate detailed predictions with round-specific columns and preserved indexes."""
+    def _generate_detailed_predictions(self, X: torch.Tensor, predictions: torch.Tensor, true_labels: torch.Tensor, prefix: str = "") -> pd.DataFrame:
+        """Generate detailed predictions with confidence metrics and metadata."""
         # Ensure predictions and true_labels are on the CPU
         predictions = predictions.cpu()
         true_labels = true_labels.cpu()
@@ -1511,11 +1511,17 @@ class DBNN(GPUDBNN):
         # Convert predictions to original class labels
         pred_labels = self.label_encoder.inverse_transform(predictions.numpy())
 
-        # Create results DataFrame with all original columns
-        results_df = self.data.copy()
+        # Create results DataFrame
+        results_df = pd.DataFrame({
+            'true_class': self.label_encoder.inverse_transform(true_labels.numpy()),
+            'predicted_class': pred_labels
+        })
 
-        # Add round-specific prediction and probability columns
-        results_df[f'{prefix}_round_{round_num}'] = pd.Series(pred_labels, index=results_df.index)
+        # Add metadata
+        results_df['dataset'] = prefix
+        results_df['rejected_columns'] = str(self.high_cardinality_columns)
+        results_df['feature_columns'] = str(self.feature_columns)
+        results_df['target_column'] = self.target_column
 
         # Compute probabilities in batches
         batch_size = self.batch_size
@@ -1545,18 +1551,47 @@ class DBNN(GPUDBNN):
             print("No probabilities were computed successfully")
             return None
 
-        # Add probability columns for each class
-        for i, class_name in enumerate(self.label_encoder.classes_):
-            results_df[f'{prefix}_round_{round_num}_prob_{class_name}'] = pd.Series(probabilities[:, i], index=results_df.index)
+        # Get actual classes used in training
+        unique_classes = np.unique(self.label_encoder.transform(self.data[self.target_column]))
+        n_classes = len(unique_classes)
 
-        # Add maximum probability
-        results_df[f'{prefix}_round_{round_num}_max_prob'] = probabilities.max(axis=1)
+        # Verify probability array shape
+        if probabilities.shape[1] != n_classes:
+            print(f"Warning: Probability array shape ({probabilities.shape}) doesn't match number of classes ({n_classes})")
+            # Adjust probabilities array if necessary
+            if probabilities.shape[1] > n_classes:
+                probabilities = probabilities[:, :n_classes]
+            else:
+                # Pad with zeros if needed
+                pad_width = ((0, 0), (0, n_classes - probabilities.shape[1]))
+                probabilities = np.pad(probabilities, pad_width, mode='constant')
+
+        # Add probability columns for actual classes used in training
+        for i, class_idx in enumerate(unique_classes):
+            class_name = self.label_encoder.inverse_transform([class_idx])[0]
+            results_df[f'prob_{class_name}'] = probabilities[:, i]
+
+        # Add confidence metrics
+        results_df['max_probability'] = probabilities.max(axis=1)
+
+        # Calculate confidence threshold based on number of classes
+        confidence_threshold = 1.5 / n_classes
+
+        # Get true class probabilities
+        true_indices = self.label_encoder.transform(results_df['true_class'])
+        true_probs = probabilities[np.arange(len(true_indices)), true_indices]
+
+        # Add confidence metrics
+        correct_prediction = (results_df['predicted_class'] == results_df['true_class'])
+        prob_diff = results_df['max_probability'] - true_probs
+
+        results_df['confidence_verdict'] = np.where(
+            (prob_diff < confidence_threshold) & correct_prediction,
+            'High Confidence',
+            'Low Confidence'
+        )
 
         return results_df
-
-
-
-
 
     def _update_training_log(self, round_num: int, metrics: Dict):
         """Update training log with current metrics"""
@@ -1583,6 +1618,7 @@ class DBNN(GPUDBNN):
         return features
 
     def _load_dataset(self) -> pd.DataFrame:
+        """Load and preprocess dataset with improved error handling"""
         DEBUG.log(f" Loading dataset from config: {self.config}")
         try:
             # Validate configuration
@@ -1591,18 +1627,99 @@ class DBNN(GPUDBNN):
             file_path = self.config.get('file_path')
             if file_path is None:
                 raise ValueError(f"No file path specified in configuration for dataset: {self.dataset_name}")
+            # Handle URL or local file
+            try:
+                if file_path.startswith(('http://', 'https://')):
+                    DEBUG.log(f" Loading from URL: {file_path}")
+                    response = requests.get(file_path)
+                    response.raise_for_status()
+                    data = StringIO(response.text)
+                else:
+                    DEBUG.log(f" Loading from local file: {file_path}")
+                    if not os.path.exists(file_path):
+                        raise FileNotFoundError(f"Dataset file not found: {file_path}")
+                    data = file_path
 
-            # Load the dataset
-            df = pd.read_csv(file_path)
+                # First, read the CSV to get the actual headers
+                has_header = self.config.get('has_header', True)
 
-            # Add original index column
-            df['original_index'] = df.index
+                read_params = {
+                    'sep': self.config.get('separator', ','),
+                    'header': 0 if has_header else None,
+                }
 
-            DEBUG.log(f" Dataset loaded successfully. Shape: {df.shape}")
-            DEBUG.log(f" Columns: {df.columns.tolist()}")
-            DEBUG.log(f" Data types:\n{df.dtypes}")
+                # DO NOT include 'names' parameter for the initial read
+                # This allows us to read the actual headers from the file
+                DEBUG.log(f" Reading CSV with parameters: {read_params}")
+                df = pd.read_csv(data, **read_params)
 
-            return df
+                if df is None or df.empty:
+                    raise ValueError(f"Empty dataset loaded from {file_path}")
+
+                DEBUG.log(f" Loaded DataFrame shape: {df.shape}")
+                DEBUG.log(f" Original DataFrame columns: {df.columns.tolist()}")
+
+                # Filter features based on config after reading the actual data
+                if 'column_names' in self.config:
+                    DEBUG.log(" Filtering features based on config")
+                    df = _filter_features_from_config(df, self.config)
+                    DEBUG.log(f" Shape after filtering: {df.shape}")
+
+                # Handle target column
+                target_column = self.config.get('target_column')
+
+                if target_column is None:
+                    raise ValueError(f"No target column specified for dataset: {self.dataset_name}")
+
+                if isinstance(target_column, int):
+                    cols = df.columns.tolist()
+                    if target_column >= len(cols):
+                        raise ValueError(f"Target column index {target_column} is out of range")
+                    target_column = cols[target_column]
+                    self.config['target_column'] = target_column
+                    DEBUG.log(f" Using target column: {target_column}")
+
+                if target_column not in df.columns:
+                    raise ValueError(f"Target column '{target_column}' not found in dataset")
+
+                DEBUG.log(f" Dataset loaded successfully. Shape: {df.shape}")
+                DEBUG.log(f" Columns: {df.columns.tolist()}")
+                DEBUG.log(f" Data types:\n{df.dtypes}")
+
+                # Create data directory path
+                dataset_folder = os.path.splitext(os.path.basename(self.dataset_name))[0]
+                base_path = self.config.get('training_params', {}).get('training_save_path', 'training_data')
+                data_dir = os.path.join(base_path, dataset_folder, 'data')
+                shuffled_file = os.path.join(data_dir, 'shuffled_data.csv')
+
+                # Check if this is a fresh start with random shuffling
+                if self.fresh_start and self.random_state == -1:
+                    print("Fresh start with random shuffling enabled")
+                    # Perform 3 rounds of truly random shuffling
+                    for _ in range(3):
+                        df = df.iloc[np.random.permutation(len(df))].reset_index(drop=True)
+                    # Ensure directory exists before saving
+                    os.makedirs(data_dir, exist_ok=True)
+                    # Save shuffled data
+                    df.to_csv(shuffled_file, index=False)
+                    print(f"Saved shuffled data to {shuffled_file}")
+                elif os.path.exists(shuffled_file):
+                    print(f"Loading previously shuffled data from {shuffled_file}")
+                    df = pd.read_csv(shuffled_file)
+                else:
+                    print("Using original data order (no shuffling required)")
+
+                return df
+
+            except requests.exceptions.RequestException as e:
+                DEBUG.log(f" Error downloading dataset from URL: {str(e)}")
+                raise RuntimeError(f"Failed to download dataset from URL: {str(e)}")
+            except pd.errors.EmptyDataError:
+                DEBUG.log(f" Error: Dataset file is empty")
+                raise ValueError(f"Dataset file is empty: {file_path}")
+            except pd.errors.ParserError as e:
+                DEBUG.log(f" Error parsing CSV file: {str(e)}")
+                raise ValueError(f"Invalid CSV format: {str(e)}")
         except Exception as e:
             DEBUG.log(f" Error loading dataset: {str(e)}")
             DEBUG.log(" Stack trace:", traceback.format_exc())
@@ -2088,8 +2205,11 @@ class DBNN(GPUDBNN):
         plt.close()
 
 
-    def adaptive_fit_predict(self, max_rounds: int = 10, batch_size: int = 32):
-        """Modified adaptive training strategy with proper fresh start handling."""
+    def adaptive_fit_predict(self, max_rounds: int = 10,
+                            improvement_threshold: float = 0.001,
+                            load_epoch: int = None,
+                            batch_size: int = 32):
+        """Modified adaptive training strategy with proper fresh start handling"""
         DEBUG.log(" Starting adaptive_fit_predict")
         if not EnableAdaptive:
             print("Adaptive learning is disabled. Using standard training.")
@@ -2107,7 +2227,6 @@ class DBNN(GPUDBNN):
             print(f" Initial data shape: X={X.shape}, y={len(y)}")
             print(f"Number of classes in data = {np.unique(y)}")
             print(self.data.head)
-
             # Initialize label encoder if not already done
             if not hasattr(self.label_encoder, 'classes_'):
                 self.label_encoder.fit(y)
@@ -2117,7 +2236,7 @@ class DBNN(GPUDBNN):
 
             # Process features and initialize model components if needed
             X_processed = self._preprocess_data(X, is_training=True)
-            self.X_tensor = X_processed.clone().detach().to(self.device)
+            self.X_tensor = torch.tensor(X_processed, dtype=torch.float32).to(self.device)
             self.y_tensor = torch.LongTensor(y_encoded).to(self.device)
 
             # Handle model state based on flags
@@ -2159,8 +2278,8 @@ class DBNN(GPUDBNN):
                             print("No previous training data found - starting fresh")
                             train_indices = []
                             test_indices = list(range(len(X)))
-                    else:
-                        print("No previous model found - starting fresh")
+                else:
+                    print("No previous model found - starting fresh")
 
             if not model_loaded:
                 print("Initializing fresh model")
@@ -2233,16 +2352,6 @@ class DBNN(GPUDBNN):
             DEBUG.log(f" Initial training set size: {len(train_indices)}")
             DEBUG.log(f" Initial test set size: {len(test_indices)}")
 
-            # Create the output directory for predictions
-            dataset_name = os.path.splitext(os.path.basename(self.dataset_name))[0]
-            output_dir = os.path.join('data', dataset_name, 'Predictions')
-            os.makedirs(output_dir, exist_ok=True)
-
-            # Initialize prediction DataFrames for train, test, and combined datasets
-            train_predictions_df = self.data.copy()
-            test_predictions_df = self.data.copy()
-            combined_predictions_df = self.data.copy()
-
             # Continue with training loop...
             for round_num in range(max_rounds):
                 print(f"Round {round_num + 1}/{max_rounds}")
@@ -2263,7 +2372,7 @@ class DBNN(GPUDBNN):
                 results = self.fit_predict(batch_size=batch_size, save_path=save_path)
 
                 # Check training accuracy
-                print(f"{Colors.GREEN}Predictions on Training data{Colors.ENDC}", end="\r", flush=True)
+                print(f"{Colors.GREEN}Predctions on Training data{Colors.ENDC}", end="\r", flush=True)
                 train_predictions = self.predict(X_train, batch_size=batch_size)
                 train_accuracy = (train_predictions == y_train.cpu()).float().mean()
                 print(f"Training accuracy: {train_accuracy:.4f}")
@@ -2276,7 +2385,7 @@ class DBNN(GPUDBNN):
                 if 'best_train_accuracy' not in locals():
                     best_train_accuracy = train_accuracy
                     improved = True
-                elif train_accuracy > best_train_accuracy + 0.001:  # Improvement threshold
+                elif train_accuracy > best_train_accuracy + improvement_threshold:
                     best_train_accuracy = train_accuracy
                     improved = True
                     print(f"Improved training accuracy to {train_accuracy:.4f}")
@@ -2284,7 +2393,7 @@ class DBNN(GPUDBNN):
                 if 'best_test_accuracy' not in locals():
                     best_test_accuracy = test_accuracy
                     improved = True
-                elif test_accuracy > best_test_accuracy + 0.001:  # Improvement threshold
+                elif test_accuracy > best_test_accuracy + improvement_threshold:
                     best_test_accuracy = test_accuracy
                     improved = True
                     print(f"Improved test accuracy to {test_accuracy:.4f}")
@@ -2305,7 +2414,7 @@ class DBNN(GPUDBNN):
                 # Evaluate test data
                 X_test = self.X_tensor[test_indices]
                 y_test = self.y_tensor[test_indices]
-                print(f"{Colors.YELLOW}Predictions on Test data{Colors.ENDC}", end="\r", flush=True)
+                print(f"{Colors.YELLOW}Predctions on Test data{Colors.ENDC}", end="\r", flush=True)
                 test_predictions = self.predict(X_test, batch_size=batch_size)
 
                 # Only print test performance header if we didn't just print metrics in fit_predict
@@ -2314,7 +2423,7 @@ class DBNN(GPUDBNN):
                     y_test_cpu = y_test.cpu().numpy()
                     test_predictions_cpu = test_predictions.cpu().numpy()
                     # Generate classification report and confusion matrix
-                    classification_report_str = classification_report(y_test_cpu, test_predictions_cpu)
+                    classification_report_str = classification_report(y_test_cpu, y_pred_cpu)
                     self.print_colored_confusion_matrix(y_test_cpu, test_predictions_cpu)
 
                 # Reset the metrics printed flag
@@ -2332,7 +2441,7 @@ class DBNN(GPUDBNN):
                     )
 
                     if not new_train_indices:
-                        print("Achieved 100% accuracy on all data. Training complete.")
+                        print("Achieved 100% accuracy on all data. Training complete.                                           ")
                         self.in_adaptive_fit = False
                         return {'train_indices': [], 'test_indices': []}
 
@@ -2356,6 +2465,10 @@ class DBNN(GPUDBNN):
                         self.bin_edges = self.best_round_initial_conditions['bin_edges']
                         self.gaussian_params = self.best_round_initial_conditions['gaussian_params']
 
+                    # Add new samples to the training set
+                    train_indices.extend(new_train_indices)
+                    test_indices = list(set(test_indices) - set(new_train_indices))
+
                 # Update training and test sets with new samples
                 train_indices.extend(new_train_indices)
                 test_indices = list(set(test_indices) - set(new_train_indices))
@@ -2363,19 +2476,6 @@ class DBNN(GPUDBNN):
 
                 # Save the current split
                 self.save_last_split(train_indices, test_indices)
-
-                # Save predictions for this round
-                train_predictions_df[f'round_{round_num}'] = pd.Series(train_predictions.cpu().numpy(), index=train_predictions_df.index)
-                test_predictions_df[f'round_{round_num}'] = pd.Series(test_predictions.cpu().numpy(), index=test_predictions_df.index)
-                combined_predictions_df[f'round_{round_num}'] = pd.Series(
-                    np.concatenate([train_predictions.cpu().numpy(), test_predictions.cpu().numpy()]),
-                    index=combined_predictions_df.index
-                )
-
-                # Save prediction files
-                train_predictions_df.to_csv(os.path.join(output_dir, f'train_predictions.csv'), index=False)
-                test_predictions_df.to_csv(os.path.join(output_dir, f'test_predictions.csv'), index=False)
-                combined_predictions_df.to_csv(os.path.join(output_dir, f'combined_predictions.csv'), index=False)
 
             self.in_adaptive_fit = False
             return {'train_indices': train_indices, 'test_indices': test_indices}
@@ -2385,8 +2485,6 @@ class DBNN(GPUDBNN):
             DEBUG.log(" Traceback:", traceback.format_exc())
             self.in_adaptive_fit = False
             raise
-
-
 
     #------------------------------------------Adaptive Learning--------------------------------------
 
@@ -4357,16 +4455,16 @@ class DBNN(GPUDBNN):
         DEBUG.log(f"Categorical encoding complete. Shape: {df_encoded.shape}")
         return df_encoded
 
-    def save_predictions(self, X: pd.DataFrame, predictions: torch.Tensor, output_file: str, true_labels: pd.Series = None, round_num: int = 0):
-        """Save predictions with proper class handling and probability computation."""
+    def save_predictions(self, X: pd.DataFrame, predictions: torch.Tensor, output_file: str, true_labels: pd.Series = None):
+        """Save predictions with proper class handling and probability computation"""
         predictions = predictions.cpu()
 
         # Create a copy of the original dataset to preserve all columns
-        result_df = self.data.copy()
+        result_df = X.copy()
 
         # Convert predictions to original class labels
         pred_labels = self.label_encoder.inverse_transform(predictions.numpy())
-        result_df[f'round_{round_num}'] = pd.Series(pred_labels, index=result_df.index)
+        result_df['predicted_class'] = pred_labels
 
         if true_labels is not None:
             result_df['true_class'] = true_labels
@@ -4424,10 +4522,10 @@ class DBNN(GPUDBNN):
         # Add probability columns for each valid class
         for i, class_name in enumerate(valid_classes):
             if i < all_probabilities.shape[1]:  # Safety check
-                result_df[f'round_{round_num}_prob_{class_name}'] = pd.Series(all_probabilities[:, i], index=result_df.index)
+                result_df[f'prob_{class_name}'] = all_probabilities[:, i]
 
         # Add maximum probability
-        result_df[f'round_{round_num}_max_prob'] = all_probabilities.max(axis=1)
+        result_df['max_probability'] = all_probabilities.max(axis=1)
 
         # Create the output directory if it doesn't exist
         dataset_name = os.path.splitext(os.path.basename(self.dataset_name))[0]
