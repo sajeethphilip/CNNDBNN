@@ -4454,6 +4454,8 @@ class DBNN(GPUDBNN):
     def save_predictions(self, X: pd.DataFrame, predictions: torch.Tensor, output_file: str, true_labels: pd.Series = None):
         """Save predictions with proper class handling and probability computation"""
         predictions = predictions.cpu()
+
+        # Create a copy of the original dataset to preserve all columns
         result_df = X.copy()
 
         # Convert predictions to original class labels
@@ -4521,12 +4523,19 @@ class DBNN(GPUDBNN):
         # Add maximum probability
         result_df['max_probability'] = all_probabilities.max(axis=1)
 
+        # Create the output directory if it doesn't exist
+        dataset_name = os.path.splitext(os.path.basename(self.dataset_name))[0]
+        output_dir = os.path.join('data', dataset_name, 'Predictions')
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Save the predictions file in the new directory
+        output_path = os.path.join(output_dir, output_file)
+        result_df.to_csv(output_path, index=False)
+        print(f"Saved predictions to {output_path}", end="\r", flush=True)
+
         if true_labels is not None:
             # Verification analysis
             self.verify_classifications(X, true_labels, predictions)
-
-        result_df.to_csv(output_file, index=False)
-        print(f"Saved predictions to {output_file}", end="\r", flush=True)
 
         return result_df
 #--------------------------------------------------------------------------------------------------------------
