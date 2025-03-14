@@ -1493,9 +1493,6 @@ class DBNN(GPUDBNN):
             'training_time'
         ])
 
-        # Initialize results DataFrame with original data
-        results_df = self.data.copy()
-
         # Train model using existing GPUDBNN methods
         if self.model_config.enable_adaptive:
             results = self.adaptive_fit_predict(max_rounds=self.model_config.epochs)
@@ -1511,15 +1508,11 @@ class DBNN(GPUDBNN):
         true_labels = y_tensor.cpu().numpy()
 
         # Generate detailed predictions for this round
-        round_num = 0  # Assuming this is round 0
-        predictions_df = self._generate_detailed_predictions(X_tensor, predictions, true_labels, round_num, prefix="train")
-
-        # Append predictions to results DataFrame
-        results_df = pd.concat([results_df, predictions_df[[f'train_round_{round_num}', f'train_round_{round_num}_prob']]], axis=1)
+        predictions_df = self._generate_detailed_predictions(X_tensor, predictions, true_labels, round_num=0, prefix="train")
 
         # Save results
         results_path = os.path.join(output_dir, f'{dataset_name}_predictions.csv')
-        results_df.to_csv(results_path, index=False)
+        predictions_df.to_csv(results_path, index=False)
 
         # Save training log
         self.training_log.to_csv(log_file, index=False)
@@ -1538,7 +1531,7 @@ class DBNN(GPUDBNN):
         }
 
     def _generate_detailed_predictions(self, X: torch.Tensor, predictions: torch.Tensor, true_labels, round_num: int, prefix: str = "") -> pd.DataFrame:
-        """Generate detailed predictions with confidence metrics and metadata for a specific round."""
+        """Generate detailed predictions with confidence metrics and metadata."""
         # Ensure predictions and true_labels are on the CPU
         predictions = predictions.cpu() if torch.is_tensor(predictions) else torch.tensor(predictions)
         true_labels = true_labels.cpu() if torch.is_tensor(true_labels) else torch.tensor(true_labels)
@@ -1546,43 +1539,23 @@ class DBNN(GPUDBNN):
         # Convert predictions to original class labels
         pred_labels = self.label_encoder.inverse_transform(predictions.numpy())
 
-        # Create a copy of the original dataset to preserve all columns
+        # Create results DataFrame with original columns
         results_df = self.data.copy()
 
-        # Add prediction columns for this round
-        results_df[f'{prefix}_round_{round_num}'] = pred_labels
-        results_df[f'{prefix}_round_{round_num}_prob'] = np.nan  # Initialize probability column
+        # Add prediction and probability columns for this round
+        results_df[f'round_{round_num}_prediction'] = np.nan  # Initialize with NaN
+        results_df[f'round_{round_num}_prob'] = np.nan  # Initialize with NaN
 
-        # Compute probabilities in batches
-        batch_size = self.batch_size
-        all_probabilities = []
+        # Update the rows used in this round
+        used_indices = X[:, -1].cpu().numpy()  # Assuming the last column is the original index
+        results_df.loc[used_indices, f'round_{round_num}_prediction'] = pred_labels
+        results_df.loc[used_indices, f'round_{round_num}_prob'] = predictions.numpy()
 
-        for i in range(0, len(X), batch_size):
-            batch_end = min(i + batch_size, len(X))
-            batch_X = X[i:batch_end]
-
-            try:
-                if self.model_type == "Histogram":
-                    batch_probs, _ = self._compute_batch_posterior(batch_X)
-                elif self.model_type == "Gaussian":
-                    batch_probs, _ = self._compute_batch_posterior_std(batch_X)
-                else:
-                    raise ValueError(f"{self.model_type} is invalid")
-
-                all_probabilities.append(batch_probs.cpu().numpy())
-
-            except Exception as e:
-                print(f"Error computing probabilities for batch {i}: {str(e)}")
-                return None
-
-        if all_probabilities:
-            probabilities = np.vstack(all_probabilities)
-        else:
-            print("No probabilities were computed successfully")
-            return None
-
-        # Add probabilities to the results DataFrame
-        results_df.loc[X.index, f'{prefix}_round_{round_num}_prob'] = probabilities.max(axis=1)
+        # Add metadata
+        results_df['dataset'] = prefix
+        results_df['rejected_columns'] = str(self.high_cardinality_columns)
+        results_df['feature_columns'] = str(self.feature_columns)
+        results_df['target_column'] = self.target_column
 
         return results_df
 
