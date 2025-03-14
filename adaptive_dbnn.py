@@ -1425,139 +1425,135 @@ class DBNN(GPUDBNN):
             )
         return self.invertible_model
 
-    def process_dataset(self, config_path: str) -> Dict:
+    def process_dataset(self, file_path: str) -> None:
+        """Process dataset with proper path handling.
+
+        Args:
+            file_path: Path to the dataset file
         """
-        Process dataset according to configuration file specifications.
-        """
-        # Load and validate configuration
         try:
-            with open(config_path, 'r') as f:
-                config_text = f.read()
+            base_name = os.path.splitext(os.path.basename(file_path))[0]
 
-            # Remove comments starting with _comment
-            config_lines = [line for line in config_text.split('\n') if not '"_comment"' in line]
-            clean_config = '\n'.join(config_lines)
+            # Create main data directory if it doesn't exist
+            if not os.path.exists('data'):
+                os.makedirs('data')
 
-            self.data_config = json.loads(clean_config)
-        except Exception as e:
-            raise ValueError(f"Error reading configuration file: {str(e)}")
+            # Setup dataset folder structure
+            dataset_folder = os.path.join('data', base_name)
+            os.makedirs(dataset_folder, exist_ok=True)
 
-        # Ensure file_path is set
-        if not self.data_config.get('file_path'):
-            dataset_name = os.path.splitext(os.path.basename(config_path))[0]
-            default_path = os.path.join('data', dataset_name, f"{dataset_name}.csv")
-            if os.path.exists(default_path):
-                self.data_config['file_path'] = default_path
-                print(f"Using default data file: {default_path}")
+            print(f"Processing dataset:")
+            print(f"Base name: {base_name}")
+            print(f"Dataset folder: {dataset_folder}")
+
+            # Define target CSV path
+            target_csv = os.path.join(dataset_folder, f"{base_name}.csv")
+
+            # If file exists at original path and isn't in dataset folder, copy it
+            if os.path.exists(file_path) and os.path.isfile(file_path) and file_path != target_csv:
+                try:
+                    import shutil
+                    shutil.copy2(file_path, target_csv)
+                    print(f"Copied dataset to: {target_csv}")
+                except Exception as e:
+                    print(f"Warning: Could not copy dataset: {str(e)}")
+
+            # If file doesn't exist in target location, try downloading from UCI
+            if not os.path.exists(target_csv):
+                print(f"File not found locally: {target_csv}")
+                print("Attempting to download from UCI repository...")
+                downloaded_path = self._download_from_uci(base_name.upper())
+                if downloaded_path:
+                    print(f"Successfully downloaded dataset to {downloaded_path}")
+                    # Ensure downloaded file is in the correct location
+                    if downloaded_path != target_csv:
+                        try:
+                            import shutil
+                            shutil.move(downloaded_path, target_csv)
+                        except Exception as e:
+                            print(f"Warning: Could not move downloaded file: {str(e)}")
+                else:
+                    print(f"Could not find or download dataset: {base_name}")
+                    return None
+
+            # Verify file exists before proceeding
+            if not os.path.exists(target_csv):
+                raise FileNotFoundError(f"Dataset file not found at {target_csv}")
+
+            # Process based on dataset structure
+            config = self._create_dataset_configs(dataset_folder, base_name)
+
+            if self._has_test_train_split(dataset_folder, base_name):
+                print("Found train/test split structure")
+                return self._handle_split_dataset(dataset_folder, base_name)
+            elif os.path.exists(target_csv):
+                print("Found single CSV file structure")
+                return self._handle_single_csv(dataset_folder, base_name, config)
+            elif self._is_compressed(file_path):
+                print("Found compressed file, extracting...")
+                extracted_path = self._decompress(file_path, dataset_folder)
+                return self.process_dataset(extracted_path)
             else:
-                raise ValueError(f"No data file found for {dataset_name}")
+                print(f"Could not determine dataset structure for {dataset_folder}")
+                return None
 
-        # Convert dictionary config to DBNNConfig object
-        config_params = {
-            'epochs': self.data_config.get('training_params', {}).get('epochs', Epochs),
-            'learning_rate': self.data_config.get('training_params', {}).get('learning_rate', LearningRate),
-            'model_type': self.data_config.get('modelType', 'Histogram'),
-            'enable_adaptive': self.data_config.get('training_params', {}).get('enable_adaptive', EnableAdaptive),
-            'batch_size': self.data_config.get('training_params', {}).get('batch_size', 128),
-            'training_data_dir': self.data_config.get('training_params', {}).get('training_save_path', 'training_data')
-        }
-        self.model_config = DBNNConfig(**config_params)
+        except Exception as e:
+            print(f"Error processing dataset: {str(e)}")
+            traceback.print_exc()
+            return None
 
-        # Create output directory structure
-        dataset_name = os.path.splitext(os.path.basename(self.data_config['file_path']))[0]
-        output_dir = os.path.join(self.model_config.training_data_dir, dataset_name, 'Predictions')
-        os.makedirs(output_dir, exist_ok=True)
-
-        # Update dataset name
-        self.dataset_name = dataset_name
-
-        # Load data using existing GPUDBNN method
-        self.data = self._load_dataset()
-
-        # Add row tracking
-        self.data['original_index'] = range(len(self.data))
-
-        # Extract features and target
-        if 'target_column' not in self.data_config:
-            self.data_config['target_column'] = 'target'  # Set default target column
-            print(f"Using default target column: 'target'")
-
-        X = self.data.drop(columns=[self.data_config['target_column']])
-        y = self.data[self.data_config['target_column']]
-
-        # Initialize training log
-        log_file = os.path.join(output_dir, f'{dataset_name}_log.csv')
-        self.training_log = pd.DataFrame(columns=[
-            'timestamp', 'round', 'train_size', 'test_size',
-            'train_loss', 'test_loss', 'train_accuracy', 'test_accuracy',
-            'training_time'
-        ])
-
-        # Train model using existing GPUDBNN methods
-        if self.model_config.enable_adaptive:
-            results = self.adaptive_fit_predict(max_rounds=self.model_config.epochs)
-        else:
-            results = self.fit_predict()
-
-        # Preprocess features and convert to tensors
-        X_tensor = self._preprocess_data(X, is_training=True)  # Preprocess data
-        y_tensor = torch.tensor(self.label_encoder.transform(y), dtype=torch.long).to(self.device)  # Encode labels
-
-        # Generate predictions and true labels
-        predictions = self.predict(X_tensor, batch_size=self.batch_size)
-        true_labels = y_tensor.cpu().numpy()
-
-        # Generate detailed predictions for this round
-        predictions_df = self._generate_detailed_predictions(X_tensor, predictions, true_labels, round_num=0, prefix="train")
-
-        # Save results
-        results_path = os.path.join(output_dir, f'{dataset_name}_predictions.csv')
-        predictions_df.to_csv(results_path, index=False)
-
-        # Save training log
-        self.training_log.to_csv(log_file, index=False)
-
-        # Count number of features actually used (excluding high cardinality and excluded features)
-        n_features = len(X.columns)
-        n_excluded = len(getattr(self, 'high_cardinality_columns', []))
-
-        return {
-            'results_path': results_path,
-            'log_path': log_file,
-            'n_samples': len(self.data),
-            'n_features': n_features,
-            'n_excluded': n_excluded,
-            'training_results': results
-        }
-
-    def _generate_detailed_predictions(self, X: torch.Tensor, predictions: torch.Tensor, true_labels, round_num: int = 0, prefix: str = "") -> pd.DataFrame:
-        """Generate detailed predictions with confidence metrics and metadata."""
+    def _generate_detailed_predictions(self, X: torch.Tensor, predictions: torch.Tensor, true_labels: torch.Tensor, prefix: str = "", round_num: int = 0) -> pd.DataFrame:
+        """Generate detailed predictions with round-specific columns and preserved indexes."""
         # Ensure predictions and true_labels are on the CPU
-        predictions = predictions.cpu() if torch.is_tensor(predictions) else torch.tensor(predictions)
-        true_labels = true_labels.cpu() if torch.is_tensor(true_labels) else torch.tensor(true_labels)
+        predictions = predictions.cpu()
+        true_labels = true_labels.cpu()
 
         # Convert predictions to original class labels
         pred_labels = self.label_encoder.inverse_transform(predictions.numpy())
 
-        # Create results DataFrame with original columns
+        # Create results DataFrame with all original columns
         results_df = self.data.copy()
 
-        # Add prediction and probability columns for this round
-        results_df[f'round_{round_num}_prediction'] = np.nan  # Initialize with NaN
-        results_df[f'round_{round_num}_prob'] = np.nan  # Initialize with NaN
+        # Add round-specific prediction and probability columns
+        results_df[f'{prefix}_round_{round_num}'] = pd.Series(pred_labels, index=results_df.index)
 
-        # Update the rows used in this round
-        used_indices = X[:, -1].cpu().numpy()  # Assuming the last column is the original index
-        results_df.loc[used_indices, f'round_{round_num}_prediction'] = pred_labels
-        results_df.loc[used_indices, f'round_{round_num}_prob'] = predictions.numpy()
+        # Compute probabilities in batches
+        batch_size = self.batch_size
+        all_probabilities = []
 
-        # Add metadata
-        results_df['dataset'] = prefix
-        results_df['rejected_columns'] = str(self.high_cardinality_columns)
-        results_df['feature_columns'] = str(self.feature_columns)
-        results_df['target_column'] = self.target_column
+        for i in range(0, len(X), batch_size):
+            batch_end = min(i + batch_size, len(X))
+            batch_X = X[i:batch_end]
+
+            try:
+                if self.model_type == "Histogram":
+                    batch_probs, _ = self._compute_batch_posterior(batch_X)
+                elif self.model_type == "Gaussian":
+                    batch_probs, _ = self._compute_batch_posterior_std(batch_X)
+                else:
+                    raise ValueError(f"{self.model_type} is invalid")
+
+                all_probabilities.append(batch_probs.cpu().numpy())
+
+            except Exception as e:
+                print(f"Error computing probabilities for batch {i}: {str(e)}")
+                return None
+
+        if all_probabilities:
+            probabilities = np.vstack(all_probabilities)
+        else:
+            print("No probabilities were computed successfully")
+            return None
+
+        # Add probability columns for each class
+        for i, class_name in enumerate(self.label_encoder.classes_):
+            results_df[f'{prefix}_round_{round_num}_prob_{class_name}'] = pd.Series(probabilities[:, i], index=results_df.index)
+
+        # Add maximum probability
+        results_df[f'{prefix}_round_{round_num}_max_prob'] = probabilities.max(axis=1)
 
         return results_df
+
 
 
 
@@ -2092,7 +2088,8 @@ class DBNN(GPUDBNN):
         plt.close()
 
 
-    def adaptive_fit_predict(self, max_rounds: int = 10, improvement_threshold: float = 0.001, load_epoch: int = None, batch_size: int = 32):
+    def adaptive_fit_predict(self, max_rounds: int = 10, batch_size: int = 32):
+        """Modified adaptive training strategy with proper fresh start handling."""
         DEBUG.log(" Starting adaptive_fit_predict")
         if not EnableAdaptive:
             print("Adaptive learning is disabled. Using standard training.")
@@ -2106,7 +2103,10 @@ class DBNN(GPUDBNN):
             # Get initial data
             X = self.data.drop(columns=[self.target_column])
             y = self.data[self.target_column]
-
+            print(self.target_column)
+            print(f" Initial data shape: X={X.shape}, y={len(y)}")
+            print(f"Number of classes in data = {np.unique(y)}")
+            print(self.data.head)
             # Initialize label encoder if not already done
             if not hasattr(self.label_encoder, 'classes_'):
                 self.label_encoder.fit(y)
@@ -2116,7 +2116,7 @@ class DBNN(GPUDBNN):
 
             # Process features and initialize model components if needed
             X_processed = self._preprocess_data(X, is_training=True)
-            self.X_tensor = X_processed.clone().detach().to(self.device)
+            self.X_tensor =  X_processed.clone().detach().to(self.device)
             self.y_tensor = torch.LongTensor(y_encoded).to(self.device)
 
             # Handle model state based on flags
@@ -2161,208 +2161,209 @@ class DBNN(GPUDBNN):
                     else:
                         print("No previous model found - starting fresh")
 
-            if not model_loaded:
-                print("Initializing fresh model")
-                self._clean_existing_model()
-                train_indices = []
-                test_indices = list(range(len(X)))
+                if not model_loaded:
+                    print("Initializing fresh model")
+                    self._clean_existing_model()
+                    train_indices = []
+                    test_indices = list(range(len(X)))
 
-                # Initialize feature pairs for fresh start
-                self.feature_pairs = self._generate_feature_combinations(
-                    self.X_tensor.shape[1],
-                    self.config.get('likelihood_config', {}).get('feature_group_size', 2),
-                    self.config.get('likelihood_config', {}).get('max_combinations', None)
-                )
-
-            # Initialize test indices if still None
-            if test_indices is None:
-                test_indices = list(range(len(X)))
-
-            # Initialize likelihood parameters if needed
-            if self.likelihood_params is None:
-                DEBUG.log(" Initializing likelihood parameters")
-                if self.model_type == "Histogram":
-                    self.likelihood_params = self._compute_pairwise_likelihood_parallel(
-                        self.X_tensor, self.y_tensor, self.X_tensor.shape[1]
+                    # Initialize feature pairs for fresh start
+                    self.feature_pairs = self._generate_feature_combinations(
+                        self.X_tensor.shape[1],
+                        self.config.get('likelihood_config', {}).get('feature_group_size', 2),
+                        self.config.get('likelihood_config', {}).get('max_combinations', None)
                     )
-                elif self.model_type == "Gaussian":
-                    self.likelihood_params = self._compute_pairwise_likelihood_parallel_std(
-                        self.X_tensor, self.y_tensor, self.X_tensor.shape[1]
+
+                # Initialize test indices if still None
+                if test_indices is None:
+                    test_indices = list(range(len(X)))
+
+                # Initialize likelihood parameters if needed
+                if self.likelihood_params is None:
+                    DEBUG.log(" Initializing likelihood parameters")
+                    if self.model_type == "Histogram":
+                        self.likelihood_params = self._compute_pairwise_likelihood_parallel(
+                            self.X_tensor, self.y_tensor, self.X_tensor.shape[1]
+                        )
+                    elif self.model_type == "Gaussian":
+                        self.likelihood_params = self._compute_pairwise_likelihood_parallel_std(
+                            self.X_tensor, self.y_tensor, self.X_tensor.shape[1]
+                        )
+                    DEBUG.log(" Likelihood parameters computed")
+
+                # Initialize weights if needed
+                if self.weight_updater is None:
+                    DEBUG.log(" Initializing weight updater")
+                    self._initialize_bin_weights()
+                    DEBUG.log(" Weight updater initialized")
+
+                # Initialize model weights if needed
+                if self.current_W is None:
+                    DEBUG.log(" Initializing model weights")
+                    n_classes = len(self.label_encoder.classes_)
+                    n_pairs = len(self.feature_pairs) if self.feature_pairs is not None else 0
+                    if n_pairs == 0:
+                        raise ValueError("Feature pairs not initialized")
+                    self.current_W = torch.full(
+                        (n_classes, n_pairs),
+                        0.1,
+                        device=self.device,
+                        dtype=torch.float32
                     )
-                DEBUG.log(" Likelihood parameters computed")
+                    if self.best_W is None:
+                        self.best_W = self.current_W.clone()
 
-            # Initialize weights if needed
-            if self.weight_updater is None:
-                DEBUG.log(" Initializing weight updater")
-                self._initialize_bin_weights()
-                DEBUG.log(" Weight updater initialized")
+                # Initialize training set if empty
+                if len(train_indices) == 0:
+                    print("Initializing new training set with minimum samples")
+                    # Select minimum samples from each class for initial training
+                    unique_classes = self.label_encoder.classes_
+                    for class_label in unique_classes:
+                        class_indices = np.where(y_encoded == self.label_encoder.transform([class_label])[0])[0]
+                        if len(class_indices) < 2:
+                            selected_indices = class_indices
+                        else:
+                            selected_indices = class_indices[:2]
+                        train_indices.extend(selected_indices)
 
-            # Initialize model weights if needed
-            if self.current_W is None:
-                DEBUG.log(" Initializing model weights")
-                n_classes = len(self.label_encoder.classes_)
-                n_pairs = len(self.feature_pairs) if self.feature_pairs is not None else 0
-                if n_pairs == 0:
-                    raise ValueError("Feature pairs not initialized")
-                self.current_W = torch.full(
-                    (n_classes, n_pairs),
-                    0.1,
-                    device=self.device,
-                    dtype=torch.float32
-                )
-                if self.best_W is None:
-                    self.best_W = self.current_W.clone()
+                    # Update test indices
+                    test_indices = list(set(range(len(X))) - set(train_indices))
 
-            # Initialize training set if empty
-            if len(train_indices) == 0:
-                print("Initializing new training set with minimum samples")
-                # Select minimum samples from each class for initial training
-                unique_classes = self.label_encoder.classes_
-                for class_label in unique_classes:
-                    class_indices = np.where(y_encoded == self.label_encoder.transform([class_label])[0])[0]
-                    if len(class_indices) < 2:
-                        selected_indices = class_indices
+                DEBUG.log(f" Initial training set size: {len(train_indices)}")
+                DEBUG.log(f" Initial test set size: {len(test_indices)}")
+
+                # Continue with training loop...
+                for round_num in range(max_rounds):
+                    print(f"Round {round_num + 1}/{max_rounds}")
+                    print(f"Training set size: {len(train_indices)}")
+                    print(f"Test set size: {len(test_indices)}")
+
+                    # Save indices for this epoch
+                    self.save_epoch_data(round_num, train_indices, test_indices)
+
+                    # Create feature tensors for training
+                    X_train = self.X_tensor[train_indices]
+                    y_train = self.y_tensor[train_indices]
+
+                    # Train the model
+                    save_path = f"round_{round_num}_predictions.csv"
+                    self.train_indices = train_indices
+                    self.test_indices = test_indices
+                    results = self.fit_predict(batch_size=batch_size, save_path=save_path)
+
+                    # Check training accuracy
+                    print(f"{Colors.GREEN}Predctions on Training data{Colors.ENDC}", end="\r", flush=True)
+                    train_predictions = self.predict(X_train, batch_size=batch_size)
+                    train_accuracy = (train_predictions == y_train.cpu()).float().mean()
+                    print(f"Training accuracy: {train_accuracy:.4f}")
+
+                    # Get test accuracy from results
+                    test_accuracy = results['test_accuracy']
+
+                    # Check if we're improving overall
+                    improved = False
+                    if 'best_train_accuracy' not in locals():
+                        best_train_accuracy = train_accuracy
+                        improved = True
+                    elif train_accuracy > best_train_accuracy + improvement_threshold:
+                        best_train_accuracy = train_accuracy
+                        improved = True
+                        print(f"Improved training accuracy to {train_accuracy:.4f}")
+
+                    if 'best_test_accuracy' not in locals():
+                        best_test_accuracy = test_accuracy
+                        improved = True
+                    elif test_accuracy > best_test_accuracy + improvement_threshold:
+                        best_test_accuracy = test_accuracy
+                        improved = True
+                        print(f"Improved test accuracy to {test_accuracy:.4f}")
+
+                    # Reset adaptive patience if improved
+                    if improved:
+                        adaptive_patience_counter = 0
                     else:
-                        selected_indices = class_indices[:2]
-                    train_indices.extend(selected_indices)
+                        adaptive_patience_counter += 1
+                        print(f"No significant overall improvement. Adaptive patience: {adaptive_patience_counter}/5")
+                        if adaptive_patience_counter >= 5:  # Using fixed value of 5 for adaptive patience
+                            print(f"No improvement in accuracy after 5 rounds of adding samples.")
+                            print(f"Best training accuracy achieved: {best_train_accuracy:.4f}")
+                            print(f"Best test accuracy achieved: {best_test_accuracy:.4f}")
+                            print("Stopping adaptive training.")
+                            break
 
-                # Update test indices
-                test_indices = list(set(range(len(X))) - set(train_indices))
+                    # Evaluate test data
+                    X_test = self.X_tensor[test_indices]
+                    y_test = self.y_tensor[test_indices]
+                    print(f"{Colors.YELLOW}Predctions on Test data{Colors.ENDC}", end="\r", flush=True)
+                    test_predictions = self.predict(X_test, batch_size=batch_size)
 
-            DEBUG.log(f" Initial training set size: {len(train_indices)}")
-            DEBUG.log(f" Initial test set size: {len(test_indices)}")
+                    # Only print test performance header if we didn't just print metrics in fit_predict
+                    if not hasattr(self, '_last_metrics_printed') or not self._last_metrics_printed:
+                        print(f"{Colors.BLUE}Test Set Performance - Round {round_num + 1}{Colors.ENDC}")
+                        y_test_cpu = y_test.cpu().numpy()
+                        test_predictions_cpu = test_predictions.cpu().numpy()
+                        # Generate classification report and confusion matrix
+                        classification_report_str = classification_report(y_test_cpu, y_pred_cpu)
+                        self.print_colored_confusion_matrix(y_test_cpu, test_predictions_cpu)
 
-            # Continue with training loop...
-            for round_num in range(max_rounds):
-                print(f"Round {round_num + 1}/{max_rounds}")
-                print(f"Training set size: {len(train_indices)}")
-                print(f"Test set size: {len(test_indices)}")
+                    # Reset the metrics printed flag
+                    self._last_metrics_printed = False
 
-                # Save indices for this epoch
-                self.save_epoch_data(round_num, train_indices, test_indices)
+                    # Check if we've achieved perfect accuracy
+                    if train_accuracy == 1.0:
+                        if len(test_indices) == 0:
+                            print("No more test samples available. Training complete.")
+                            break
 
-                # Create feature tensors for training
-                X_train = self.X_tensor[train_indices]
-                y_train = self.y_tensor[train_indices]
+                        # Get new training samples from misclassified examples
+                        new_train_indices = self._select_samples_from_failed_classes(
+                            test_predictions, y_test, test_indices
+                        )
 
-                # Train the model
-                save_path = f"round_{round_num}_predictions.csv"
-                self.train_indices = train_indices
-                self.test_indices = test_indices
-                results = self.fit_predict(batch_size=batch_size, save_path=save_path)
+                        if not new_train_indices:
+                            print("Achieved 100% accuracy on all data. Training complete.                                           ")
+                            self.in_adaptive_fit = False
+                            return {'train_indices': [], 'test_indices': []}
 
-                # Check training accuracy
-                print(f"{Colors.GREEN}Predctions on Training data{Colors.ENDC}", end="\r", flush=True)
-                train_predictions = self.predict(X_train, batch_size=batch_size)
-                train_accuracy = (train_predictions == y_train.cpu()).float().mean()
-                print(f"Training accuracy: {train_accuracy:.4f}")
+                    else:
+                        # Training did not achieve 100% accuracy, select new samples
+                        new_train_indices = self._select_samples_from_failed_classes(
+                            test_predictions, y_test, test_indices
+                        )
 
-                # Get test accuracy from results
-                test_accuracy = results['test_accuracy']
-
-                # Check if we're improving overall
-                improved = False
-                if 'best_train_accuracy' not in locals():
-                    best_train_accuracy = train_accuracy
-                    improved = True
-                elif train_accuracy > best_train_accuracy + improvement_threshold:
-                    best_train_accuracy = train_accuracy
-                    improved = True
-                    print(f"Improved training accuracy to {train_accuracy:.4f}")
-
-                if 'best_test_accuracy' not in locals():
-                    best_test_accuracy = test_accuracy
-                    improved = True
-                elif test_accuracy > best_test_accuracy + improvement_threshold:
-                    best_test_accuracy = test_accuracy
-                    improved = True
-                    print(f"Improved test accuracy to {test_accuracy:.4f}")
-
-                # Reset adaptive patience if improved
-                if improved:
-                    adaptive_patience_counter = 0
-                else:
-                    adaptive_patience_counter += 1
-                    print(f"No significant overall improvement. Adaptive patience: {adaptive_patience_counter}/5")
-                    if adaptive_patience_counter >= 5:  # Using fixed value of 5 for adaptive patience
-                        print(f"No improvement in accuracy after 5 rounds of adding samples.")
-                        print(f"Best training accuracy achieved: {best_train_accuracy:.4f}")
-                        print(f"Best test accuracy achieved: {best_test_accuracy:.4f}")
-                        print("Stopping adaptive training.")
-                        break
-
-                # Evaluate test data
-                X_test = self.X_tensor[test_indices]
-                y_test = self.y_tensor[test_indices]
-                print(f"{Colors.YELLOW}Predctions on Test data{Colors.ENDC}", end="\r", flush=True)
-                test_predictions = self.predict(X_test, batch_size=batch_size)
-
-                # Only print test performance header if we didn't just print metrics in fit_predict
-                if not hasattr(self, '_last_metrics_printed') or not self._last_metrics_printed:
-                    print(f"{Colors.BLUE}Test Set Performance - Round {round_num + 1}{Colors.ENDC}")
-                    y_test_cpu = y_test.cpu().numpy()
-                    test_predictions_cpu = test_predictions.cpu().numpy()
-                    # Generate classification report and confusion matrix
-                    classification_report_str = classification_report(y_test_cpu, y_pred_cpu)
-                    self.print_colored_confusion_matrix(y_test_cpu, test_predictions_cpu)
-
-                # Reset the metrics printed flag
-                self._last_metrics_printed = False
-
-                # Check if we've achieved perfect accuracy
-                if train_accuracy == 1.0:
-                    if len(test_indices) == 0:
-                        print("No more test samples available. Training complete.")
-                        break
-
-                    # Get new training samples from misclassified examples
-                    new_train_indices = self._select_samples_from_failed_classes(
-                        test_predictions, y_test, test_indices
-                    )
-
-                    if not new_train_indices:
-                        print("Achieved 100% accuracy on all data. Training complete.                                           ")
-                        self.in_adaptive_fit = False
-                        return {'train_indices': [], 'test_indices': []}
-
-                else:
-                    # Training did not achieve 100% accuracy, select new samples
-                    new_train_indices = self._select_samples_from_failed_classes(
-                        test_predictions, y_test, test_indices
-                    )
-
-                    if not new_train_indices:
-                        print("No suitable new samples found. Training complete.")
-                        break
+                        if not new_train_indices:
+                            print("No suitable new samples found. Training complete.")
+                            break
 
 
-                if new_train_indices:
-                    # Reset to the best round's initial conditions
-                    if self.best_round_initial_conditions is not None:
-                        print(f"Resetting to initial conditions of best round {self.best_round}")
-                        self.current_W = self.best_round_initial_conditions['weights'].clone()
-                        self.likelihood_params = self.best_round_initial_conditions['likelihood_params']
-                        self.feature_pairs = self.best_round_initial_conditions['feature_pairs']
-                        self.bin_edges = self.best_round_initial_conditions['bin_edges']
-                        self.gaussian_params = self.best_round_initial_conditions['gaussian_params']
+                    if new_train_indices:
+                        # Reset to the best round's initial conditions
+                        if self.best_round_initial_conditions is not None:
+                            print(f"Resetting to initial conditions of best round {self.best_round}")
+                            self.current_W = self.best_round_initial_conditions['weights'].clone()
+                            self.likelihood_params = self.best_round_initial_conditions['likelihood_params']
+                            self.feature_pairs = self.best_round_initial_conditions['feature_pairs']
+                            self.bin_edges = self.best_round_initial_conditions['bin_edges']
+                            self.gaussian_params = self.best_round_initial_conditions['gaussian_params']
 
 
-                # Update training and test sets with new samples
-                train_indices.extend(new_train_indices)
-                test_indices = list(set(test_indices) - set(new_train_indices))
-                print(f"Added {len(new_train_indices)} new samples to training set")
+                    # Update training and test sets with new samples
+                    train_indices.extend(new_train_indices)
+                    test_indices = list(set(test_indices) - set(new_train_indices))
+                    print(f"Added {len(new_train_indices)} new samples to training set")
 
-                # Save the current split
-                self.save_last_split(train_indices, test_indices)
+                    # Save the current split
+                    self.save_last_split(train_indices, test_indices)
 
-            self.in_adaptive_fit = False
-            return {'train_indices': train_indices, 'test_indices': test_indices}
+                self.in_adaptive_fit = False
+                return {'train_indices': train_indices, 'test_indices': test_indices}
 
-        except Exception as e:
-            DEBUG.log(f" Error in adaptive_fit_predict: {str(e)}")
-            DEBUG.log(" Traceback:", traceback.format_exc())
-            self.in_adaptive_fit = False
-            raise
+            except Exception as e:
+                DEBUG.log(f" Error in adaptive_fit_predict: {str(e)}")
+                DEBUG.log(" Traceback:", traceback.format_exc())
+                self.in_adaptive_fit = False
+                raise
+
 
     #------------------------------------------Adaptive Learning--------------------------------------
 
@@ -4333,16 +4334,16 @@ class DBNN(GPUDBNN):
         DEBUG.log(f"Categorical encoding complete. Shape: {df_encoded.shape}")
         return df_encoded
 
-    def save_predictions(self, X: pd.DataFrame, predictions: torch.Tensor, output_file: str, true_labels: pd.Series = None):
-        """Save predictions with proper class handling and probability computation"""
+    def save_predictions(self, X: pd.DataFrame, predictions: torch.Tensor, output_file: str, true_labels: pd.Series = None, round_num: int = 0):
+        """Save predictions with proper class handling and probability computation."""
         predictions = predictions.cpu()
 
         # Create a copy of the original dataset to preserve all columns
-        result_df = X.copy()
+        result_df = self.data.copy()
 
         # Convert predictions to original class labels
         pred_labels = self.label_encoder.inverse_transform(predictions.numpy())
-        result_df['predicted_class'] = pred_labels
+        result_df[f'round_{round_num}'] = pd.Series(pred_labels, index=result_df.index)
 
         if true_labels is not None:
             result_df['true_class'] = true_labels
@@ -4400,10 +4401,10 @@ class DBNN(GPUDBNN):
         # Add probability columns for each valid class
         for i, class_name in enumerate(valid_classes):
             if i < all_probabilities.shape[1]:  # Safety check
-                result_df[f'prob_{class_name}'] = all_probabilities[:, i]
+                result_df[f'round_{round_num}_prob_{class_name}'] = pd.Series(all_probabilities[:, i], index=result_df.index)
 
         # Add maximum probability
-        result_df['max_probability'] = all_probabilities.max(axis=1)
+        result_df[f'round_{round_num}_max_prob'] = all_probabilities.max(axis=1)
 
         # Create the output directory if it doesn't exist
         dataset_name = os.path.splitext(os.path.basename(self.dataset_name))[0]
