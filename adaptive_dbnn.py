@@ -1530,7 +1530,7 @@ class DBNN(GPUDBNN):
             'training_results': results
         }
 
-    def _generate_detailed_predictions(self, X: torch.Tensor, predictions: torch.Tensor, true_labels, round_num: int, prefix: str = "") -> pd.DataFrame:
+    def _generate_detailed_predictions(self, X: torch.Tensor, predictions: torch.Tensor, true_labels, round_num: int = 0, prefix: str = "") -> pd.DataFrame:
         """Generate detailed predictions with confidence metrics and metadata."""
         # Ensure predictions and true_labels are on the CPU
         predictions = predictions.cpu() if torch.is_tensor(predictions) else torch.tensor(predictions)
@@ -1558,6 +1558,7 @@ class DBNN(GPUDBNN):
         results_df['target_column'] = self.target_column
 
         return results_df
+
 
 
 
