@@ -1618,7 +1618,6 @@ class DBNN(GPUDBNN):
         return features
 
     def _load_dataset(self) -> pd.DataFrame:
-        """Load and preprocess dataset with improved error handling"""
         DEBUG.log(f" Loading dataset from config: {self.config}")
         try:
             # Validate configuration
@@ -1627,99 +1626,18 @@ class DBNN(GPUDBNN):
             file_path = self.config.get('file_path')
             if file_path is None:
                 raise ValueError(f"No file path specified in configuration for dataset: {self.dataset_name}")
-            # Handle URL or local file
-            try:
-                if file_path.startswith(('http://', 'https://')):
-                    DEBUG.log(f" Loading from URL: {file_path}")
-                    response = requests.get(file_path)
-                    response.raise_for_status()
-                    data = StringIO(response.text)
-                else:
-                    DEBUG.log(f" Loading from local file: {file_path}")
-                    if not os.path.exists(file_path):
-                        raise FileNotFoundError(f"Dataset file not found: {file_path}")
-                    data = file_path
 
-                # First, read the CSV to get the actual headers
-                has_header = self.config.get('has_header', True)
+            # Load the dataset
+            df = pd.read_csv(file_path)
 
-                read_params = {
-                    'sep': self.config.get('separator', ','),
-                    'header': 0 if has_header else None,
-                }
+            # Add original index column
+            df['original_index'] = df.index
 
-                # DO NOT include 'names' parameter for the initial read
-                # This allows us to read the actual headers from the file
-                DEBUG.log(f" Reading CSV with parameters: {read_params}")
-                df = pd.read_csv(data, **read_params)
+            DEBUG.log(f" Dataset loaded successfully. Shape: {df.shape}")
+            DEBUG.log(f" Columns: {df.columns.tolist()}")
+            DEBUG.log(f" Data types:\n{df.dtypes}")
 
-                if df is None or df.empty:
-                    raise ValueError(f"Empty dataset loaded from {file_path}")
-
-                DEBUG.log(f" Loaded DataFrame shape: {df.shape}")
-                DEBUG.log(f" Original DataFrame columns: {df.columns.tolist()}")
-
-                # Filter features based on config after reading the actual data
-                if 'column_names' in self.config:
-                    DEBUG.log(" Filtering features based on config")
-                    df = _filter_features_from_config(df, self.config)
-                    DEBUG.log(f" Shape after filtering: {df.shape}")
-
-                # Handle target column
-                target_column = self.config.get('target_column')
-
-                if target_column is None:
-                    raise ValueError(f"No target column specified for dataset: {self.dataset_name}")
-
-                if isinstance(target_column, int):
-                    cols = df.columns.tolist()
-                    if target_column >= len(cols):
-                        raise ValueError(f"Target column index {target_column} is out of range")
-                    target_column = cols[target_column]
-                    self.config['target_column'] = target_column
-                    DEBUG.log(f" Using target column: {target_column}")
-
-                if target_column not in df.columns:
-                    raise ValueError(f"Target column '{target_column}' not found in dataset")
-
-                DEBUG.log(f" Dataset loaded successfully. Shape: {df.shape}")
-                DEBUG.log(f" Columns: {df.columns.tolist()}")
-                DEBUG.log(f" Data types:\n{df.dtypes}")
-
-                # Create data directory path
-                dataset_folder = os.path.splitext(os.path.basename(self.dataset_name))[0]
-                base_path = self.config.get('training_params', {}).get('training_save_path', 'training_data')
-                data_dir = os.path.join(base_path, dataset_folder, 'data')
-                shuffled_file = os.path.join(data_dir, 'shuffled_data.csv')
-
-                # Check if this is a fresh start with random shuffling
-                if self.fresh_start and self.random_state == -1:
-                    print("Fresh start with random shuffling enabled")
-                    # Perform 3 rounds of truly random shuffling
-                    for _ in range(3):
-                        df = df.iloc[np.random.permutation(len(df))].reset_index(drop=True)
-                    # Ensure directory exists before saving
-                    os.makedirs(data_dir, exist_ok=True)
-                    # Save shuffled data
-                    df.to_csv(shuffled_file, index=False)
-                    print(f"Saved shuffled data to {shuffled_file}")
-                elif os.path.exists(shuffled_file):
-                    print(f"Loading previously shuffled data from {shuffled_file}")
-                    df = pd.read_csv(shuffled_file)
-                else:
-                    print("Using original data order (no shuffling required)")
-
-                return df
-
-            except requests.exceptions.RequestException as e:
-                DEBUG.log(f" Error downloading dataset from URL: {str(e)}")
-                raise RuntimeError(f"Failed to download dataset from URL: {str(e)}")
-            except pd.errors.EmptyDataError:
-                DEBUG.log(f" Error: Dataset file is empty")
-                raise ValueError(f"Dataset file is empty: {file_path}")
-            except pd.errors.ParserError as e:
-                DEBUG.log(f" Error parsing CSV file: {str(e)}")
-                raise ValueError(f"Invalid CSV format: {str(e)}")
+            return df
         except Exception as e:
             DEBUG.log(f" Error loading dataset: {str(e)}")
             DEBUG.log(" Stack trace:", traceback.format_exc())
@@ -2205,11 +2123,7 @@ class DBNN(GPUDBNN):
         plt.close()
 
 
-    def adaptive_fit_predict(self, max_rounds: int = 10,
-                            improvement_threshold: float = 0.001,
-                            load_epoch: int = None,
-                            batch_size: int = 32):
-        """Modified adaptive training strategy with proper fresh start handling"""
+    def adaptive_fit_predict(self, max_rounds: int = 10, improvement_threshold: float = 0.001, load_epoch: int = None, batch_size: int = 32):
         DEBUG.log(" Starting adaptive_fit_predict")
         if not EnableAdaptive:
             print("Adaptive learning is disabled. Using standard training.")
@@ -2223,10 +2137,7 @@ class DBNN(GPUDBNN):
             # Get initial data
             X = self.data.drop(columns=[self.target_column])
             y = self.data[self.target_column]
-            print(self.target_column)
-            print(f" Initial data shape: X={X.shape}, y={len(y)}")
-            print(f"Number of classes in data = {np.unique(y)}")
-            print(self.data.head)
+
             # Initialize label encoder if not already done
             if not hasattr(self.label_encoder, 'classes_'):
                 self.label_encoder.fit(y)
@@ -2236,7 +2147,7 @@ class DBNN(GPUDBNN):
 
             # Process features and initialize model components if needed
             X_processed = self._preprocess_data(X, is_training=True)
-            self.X_tensor = torch.tensor(X_processed, dtype=torch.float32).to(self.device)
+            self.X_tensor = X_processed.clone().detach().to(self.device)
             self.y_tensor = torch.LongTensor(y_encoded).to(self.device)
 
             # Handle model state based on flags
@@ -2278,8 +2189,8 @@ class DBNN(GPUDBNN):
                             print("No previous training data found - starting fresh")
                             train_indices = []
                             test_indices = list(range(len(X)))
-                else:
-                    print("No previous model found - starting fresh")
+                    else:
+                        print("No previous model found - starting fresh")
 
             if not model_loaded:
                 print("Initializing fresh model")
@@ -2455,6 +2366,7 @@ class DBNN(GPUDBNN):
                         print("No suitable new samples found. Training complete.")
                         break
 
+
                 if new_train_indices:
                     # Reset to the best round's initial conditions
                     if self.best_round_initial_conditions is not None:
@@ -2465,9 +2377,6 @@ class DBNN(GPUDBNN):
                         self.bin_edges = self.best_round_initial_conditions['bin_edges']
                         self.gaussian_params = self.best_round_initial_conditions['gaussian_params']
 
-                    # Add new samples to the training set
-                    train_indices.extend(new_train_indices)
-                    test_indices = list(set(test_indices) - set(new_train_indices))
 
                 # Update training and test sets with new samples
                 train_indices.extend(new_train_indices)
