@@ -1330,7 +1330,6 @@ class DBNN(GPUDBNN):
             fresh=config.fresh_start,
             use_previous_model=config.use_previous_model,
             model_type=config.model_type,
-            device=device  # Pass the device parameter to GPUDBNN
         )
 
 
