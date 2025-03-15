@@ -4468,17 +4468,32 @@ class DBNN(GPUDBNN):
         DEBUG.log(f"Categorical encoding complete. Shape: {df_encoded.shape}")
         return df_encoded
 
-    def save_predictions(self, X: pd.DataFrame, predictions: torch.Tensor, output_file: str, true_labels: pd.Series = None):
-        """Save predictions with proper class handling and probability computation"""
-        predictions = predictions.cpu()
+    def save_predictions(self, X: pd.DataFrame, predictions: torch.Tensor, output_file: str, true_labels: pd.Series = None, round_num: int = 0):
+        """
+        Save predictions with proper class handling and probability computation.
+        Adds columns for predictions and probabilities for each round.
 
-        # Create a copy of the original dataset to preserve all columns
+        Args:
+            X: Input DataFrame (original data before preprocessing).
+            predictions: Predictions tensor (from the model).
+            output_file: Output file name.
+            true_labels: True labels (optional).
+            round_num: Current round number (default: 0).
+        """
+        # Create a copy of the original DataFrame to preserve all columns
         result_df = X.copy()
 
-        # Convert predictions to original class labels
-        pred_labels = self.label_encoder.inverse_transform(predictions.numpy())
-        result_df['predicted_class'] = pred_labels
+        # Ensure predictions are on CPU and converted to NumPy arrays
+        if isinstance(predictions, torch.Tensor):
+            predictions_cpu = predictions.cpu().numpy()
+        else:
+            predictions_cpu = predictions  # Assume it's already a NumPy array
 
+        # Convert predictions to original class labels
+        pred_labels = self.label_encoder.inverse_transform(predictions_cpu)
+        result_df[f'round_{round_num}_pred'] = pred_labels
+
+        # Add true labels if available
         if true_labels is not None:
             result_df['true_class'] = true_labels
 
@@ -4490,7 +4505,7 @@ class DBNN(GPUDBNN):
             X_tensor = torch.tensor(X_processed, dtype=torch.float32).to(self.device)
 
         # Compute probabilities in batches
-        batch_size = 32
+        batch_size = self.batch_size
         all_probabilities = []
 
         for i in range(0, len(X_tensor), batch_size):
@@ -4505,16 +4520,19 @@ class DBNN(GPUDBNN):
                 else:
                     raise ValueError(f"{self.model_type} is invalid")
 
-                all_probabilities.append(batch_probs.cpu().numpy())
+                # Ensure batch_probs is on CPU
+                if isinstance(batch_probs, torch.Tensor):
+                    batch_probs = batch_probs.cpu().numpy()
+                all_probabilities.append(batch_probs)
 
             except Exception as e:
                 print(f"Error computing probabilities for batch {i}: {str(e)}")
                 return None
 
         if all_probabilities:
-            all_probabilities = np.vstack(all_probabilities)
+            probabilities = np.vstack(all_probabilities)
         else:
-            print("No probabilities were computed successfully", end="\r", flush=True)
+            print("No probabilities were computed successfully")
             return None
 
         # Ensure we're only using valid class indices
@@ -4522,23 +4540,23 @@ class DBNN(GPUDBNN):
         n_classes = len(valid_classes)
 
         # Verify probability array shape matches number of classes
-        if all_probabilities.shape[1] != n_classes:
-            print(f"Warning: Probability array shape ({all_probabilities.shape}) doesn't match number of classes ({n_classes})")
+        if probabilities.shape[1] != n_classes:
+            print(f"Warning: Probability array shape ({probabilities.shape}) doesn't match number of classes ({n_classes})")
             # Adjust probabilities array if necessary
-            if all_probabilities.shape[1] > n_classes:
-                all_probabilities = all_probabilities[:, :n_classes]
+            if probabilities.shape[1] > n_classes:
+                probabilities = probabilities[:, :n_classes]
             else:
                 # Pad with zeros if needed
-                pad_width = ((0, 0), (0, n_classes - all_probabilities.shape[1]))
-                all_probabilities = np.pad(all_probabilities, pad_width, mode='constant')
+                pad_width = ((0, 0), (0, n_classes - probabilities.shape[1]))
+                probabilities = np.pad(probabilities, pad_width, mode='constant')
 
         # Add probability columns for each valid class
         for i, class_name in enumerate(valid_classes):
-            if i < all_probabilities.shape[1]:  # Safety check
-                result_df[f'prob_{class_name}'] = all_probabilities[:, i]
+            if i < probabilities.shape[1]:  # Safety check
+                result_df[f'round_{round_num}_prob_{class_name}'] = probabilities[:, i]
 
         # Add maximum probability
-        result_df['max_probability'] = all_probabilities.max(axis=1)
+        result_df[f'round_{round_num}_max_prob'] = probabilities.max(axis=1)
 
         # Create the output directory if it doesn't exist
         dataset_name = os.path.splitext(os.path.basename(self.dataset_name))[0]
@@ -4555,6 +4573,7 @@ class DBNN(GPUDBNN):
             self.verify_classifications(X, true_labels, predictions)
 
         return result_df
+
 #--------------------------------------------------------------------------------------------------------------
 
     def _save_model_components(self):
