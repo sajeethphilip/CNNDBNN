@@ -617,28 +617,26 @@ class ComputationCache:
         return self.feature_group_cache[key]
 
 class BinWeightUpdater:
-    def __init__(self, n_classes, feature_pairs, n_bins_per_dim=5):
+    def __init__(self, n_classes, feature_pairs, n_bins_per_dim=5,batch_size=128):
         self.n_classes = n_classes
         self.feature_pairs = feature_pairs
         self.n_bins_per_dim = n_bins_per_dim
-        self.device = Train_device
-
-
-        # Initialize histogram_weights as empty dictionary
+        self.device=Train_device
+        # Initialize histogram_weights as empty dictionary first
         self.histogram_weights = {}
+        self.batch_size=batch_size
 
-        # Create weights for each class and feature group
+        # Create weights for each class and feature pair
         for class_id in range(n_classes):
             self.histogram_weights[class_id] = {}
-            for group_idx in range(len(feature_pairs)):
+            for pair_idx in range(len(feature_pairs)):
                 # Initialize with default weight of 0.1
-                group_size = len(feature_pairs[group_idx])
-                weight_shape = [self.n_bins_per_dim] * group_size
-                self.histogram_weights[class_id][group_idx] = torch.full(
-                    weight_shape,
+                #print(f"[DEBUG] Creating weights for class {class_id}, pair {pair_idx}")
+                self.histogram_weights[class_id][pair_idx] = torch.full(
+                    (n_bins_per_dim, n_bins_per_dim),
                     0.1,
                     dtype=torch.float32,
-                    device=self.device
+                    device=self.device  # Ensure weights are created on correct device
                 ).contiguous()
 
         # Initialize weights for each class and feature pair
@@ -677,7 +675,7 @@ class BinWeightUpdater:
             n_updates = len(class_indices)
 
             # Process in batches for memory efficiency
-            batch_size = 100  # Adjust based on available memory
+            batch_size = self.batch_size  # Adjust based on available memory
             for i in range(0, n_updates, batch_size):
                 end_idx = min(i + batch_size, n_updates)
 
@@ -721,26 +719,6 @@ class BinWeightUpdater:
 
         return weights
 
-    def update_weight_old(self, class_id: int, pair_idx: int, bin_i: int, bin_j: int, adjustment: float):
-        """Update a single weight value with proper indexing"""
-        try:
-            weights = self.get_histogram_weights(class_id, pair_idx)
-
-            # Ensure indices are within bounds
-            bin_i = min(max(0, bin_i), self.n_bins_per_dim - 1)
-            bin_j = min(max(0, bin_j), self.n_bins_per_dim - 1)
-
-            # Update single value
-            current_weight = weights[bin_i, bin_j].item()
-            weights[bin_i, bin_j] = current_weight + adjustment
-
-        except Exception as e:
-            DEBUG.log(f"Error updating weight:")
-            DEBUG.log(f"class_id: {class_id}, pair_idx: {pair_idx}")
-            DEBUG.log(f"bin_i: {bin_i}, bin_j: {bin_j}")
-            DEBUG.log(f"adjustment: {adjustment}")
-            DEBUG.log(f"Error: {str(e)}")
-            raise
 
     def _ensure_buffers(self, batch_size):
         """Ensure buffers exist and are the right size"""
