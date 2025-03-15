@@ -1315,12 +1315,8 @@ class DBNN(GPUDBNN):
 
         # First load the dataset configuration
         self.data_config = DatasetConfig.load_config(dataset_name) if dataset_name else None
-        # Ensure dataset_name is provided
-        if dataset_name is None:
-            raise ValueError("dataset_name must be provided.")
 
-        # Initialize the base class (GPUDBNN)
-        # Initialize the base class (GPUDBNN)
+        # Map DBNNConfig to GPUDBNN parameters
         super().__init__(
             dataset_name=dataset_name,
             learning_rate=config.learning_rate,
@@ -1329,18 +1325,18 @@ class DBNN(GPUDBNN):
             random_state=config.random_seed,
             fresh=config.fresh_start,
             use_previous_model=config.use_previous_model,
-            model_type=config.model_type,
+            model_type=config.model_type  # Pass model type from config
         )
-
-        # Add new attributes to track the best round
-        self.best_round = None  # Track the best round number
-        self.best_round_initial_conditions = None  # Save initial conditions of the best round
         self.cardinality_threshold = self.config.get('training_params', {}).get('cardinality_threshold', 0.9)
 
         # Store model configuration
         self.model_config = config
         self.training_log = pd.DataFrame()
         self.save_plots = self.config.get('training_params', {}).get('save_plots', False)
+
+        # Add new attributes to track the best round
+        self.best_round = None  # Track the best round number
+        self.best_round_initial_conditions = None  # Save initial conditions of the best round
 
         # Validate dataset_name
         if not dataset_name or not isinstance(dataset_name, str):
@@ -1405,7 +1401,7 @@ class DBNN(GPUDBNN):
         X_processed = self._preprocess_data(X, is_training=True)
 
         # Convert to tensors on CPU first, then move to device
-        self.X_tensor = torch.tensor(X_processed, dtype=torch.float32).to(self.device)
+        self.X_tensor =  X_processed.clone().detach().to(self.device)
         self.y_tensor = torch.tensor(y_encoded, dtype=torch.long).to(self.device)
 
         # Split data into training and testing sets
@@ -1425,119 +1421,174 @@ class DBNN(GPUDBNN):
             )
         return self.invertible_model
 
-    def process_dataset(self, file_path: str) -> None:
-        """Process dataset with proper path handling.
+    def process_dataset(self, config_path: str) -> Dict:
+        """
+        Process dataset according to configuration file specifications
 
         Args:
-            file_path: Path to the dataset file
+            config_path: Path to JSON configuration file
+
+        Returns:
+            Dictionary containing processing results
         """
+        # Load and validate configuration
         try:
-            base_name = os.path.splitext(os.path.basename(file_path))[0]
+            with open(config_path, 'r') as f:
+                config_text = f.read()
 
-            # Create main data directory if it doesn't exist
-            if not os.path.exists('data'):
-                os.makedirs('data')
+            # Remove comments starting with _comment
+            config_lines = [line for line in config_text.split('\n') if not '"_comment"' in line]
+            clean_config = '\n'.join(config_lines)
 
-            # Setup dataset folder structure
-            dataset_folder = os.path.join('data', base_name)
-            os.makedirs(dataset_folder, exist_ok=True)
-
-            print(f"Processing dataset:")
-            print(f"Base name: {base_name}")
-            print(f"Dataset folder: {dataset_folder}")
-
-            # Define target CSV path
-            target_csv = os.path.join(dataset_folder, f"{base_name}.csv")
-
-            # If file exists at original path and isn't in dataset folder, copy it
-            if os.path.exists(file_path) and os.path.isfile(file_path) and file_path != target_csv:
-                try:
-                    import shutil
-                    shutil.copy2(file_path, target_csv)
-                    print(f"Copied dataset to: {target_csv}")
-                except Exception as e:
-                    print(f"Warning: Could not copy dataset: {str(e)}")
-
-            # If file doesn't exist in target location, try downloading from UCI
-            if not os.path.exists(target_csv):
-                print(f"File not found locally: {target_csv}")
-                print("Attempting to download from UCI repository...")
-                downloaded_path = self._download_from_uci(base_name.upper())
-                if downloaded_path:
-                    print(f"Successfully downloaded dataset to {downloaded_path}")
-                    # Ensure downloaded file is in the correct location
-                    if downloaded_path != target_csv:
-                        try:
-                            import shutil
-                            shutil.move(downloaded_path, target_csv)
-                        except Exception as e:
-                            print(f"Warning: Could not move downloaded file: {str(e)}")
-                else:
-                    print(f"Could not find or download dataset: {base_name}")
-                    return None
-
-            # Verify file exists before proceeding
-            if not os.path.exists(target_csv):
-                raise FileNotFoundError(f"Dataset file not found at {target_csv}")
-
-            # Process based on dataset structure
-            config = self._create_dataset_configs(dataset_folder, base_name)
-
-            if self._has_test_train_split(dataset_folder, base_name):
-                print("Found train/test split structure")
-                return self._handle_split_dataset(dataset_folder, base_name)
-            elif os.path.exists(target_csv):
-                print("Found single CSV file structure")
-                return self._handle_single_csv(dataset_folder, base_name, config)
-            elif self._is_compressed(file_path):
-                print("Found compressed file, extracting...")
-                extracted_path = self._decompress(file_path, dataset_folder)
-                return self.process_dataset(extracted_path)
-            else:
-                print(f"Could not determine dataset structure for {dataset_folder}")
-                return None
-
+            self.data_config = json.loads(clean_config)
         except Exception as e:
-            print(f"Error processing dataset: {str(e)}")
-            traceback.print_exc()
-            return None
+            raise ValueError(f"Error reading configuration file: {str(e)}")
 
-    def _generate_detailed_predictions(self, X: torch.Tensor, predictions: torch.Tensor, true_labels: Union[torch.Tensor, np.ndarray], prefix: str = "") -> pd.DataFrame:
-        """Generate detailed predictions with confidence metrics and metadata."""
-        # Ensure predictions and true_labels are on CPU and converted to NumPy arrays
-        if isinstance(predictions, torch.Tensor):
-            predictions_cpu = predictions.cpu().numpy()
+        # Ensure file_path is set
+        if not self.data_config.get('file_path'):
+            dataset_name = os.path.splitext(os.path.basename(config_path))[0]
+            default_path = os.path.join('data', dataset_name, f"{dataset_name}.csv")
+            if os.path.exists(default_path):
+                self.data_config['file_path'] = default_path
+                print(f"Using default data file: {default_path}")
+            else:
+                raise ValueError(f"No data file found for {dataset_name}")
+
+        # Convert dictionary config to DBNNConfig object
+        config_params = {
+            'epochs': self.data_config.get('training_params', {}).get('epochs', Epochs),
+            'learning_rate': self.data_config.get('training_params', {}).get('learning_rate', LearningRate),
+            'model_type': self.data_config.get('modelType', 'Histogram'),
+            'enable_adaptive': self.data_config.get('training_params', {}).get('enable_adaptive', EnableAdaptive),
+            'batch_size': self.data_config.get('training_params', {}).get('batch_size', 128),
+            'training_data_dir': self.data_config.get('training_params', {}).get('training_save_path', 'training_data')
+        }
+        self.model_config = DBNNConfig(**config_params)
+
+        # Create output directory structure
+        dataset_name = os.path.splitext(os.path.basename(self.data_config['file_path']))[0]
+        output_dir = os.path.join(self.model_config.training_data_dir, dataset_name)
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Update dataset name
+        self.dataset_name = dataset_name
+
+        # Load data using existing GPUDBNN method
+        self.data = self._load_dataset()
+
+        # Add row tracking
+        self.data['original_index'] = range(len(self.data))
+
+        # Extract features and target
+
+        if 'target_column' not in self.data_config:
+            self.data_config['target_column'] = 'target'  # Set default target column
+            print(f"Using default target column: 'target'")
+
+        X = self.data.drop(columns=[self.data_config['target_column']])
+        y = self.data[self.data_config['target_column']]
+
+        # Initialize training log
+        log_file = os.path.join(output_dir, f'{dataset_name}_log.csv')
+        self.training_log = pd.DataFrame(columns=[
+            'timestamp', 'round', 'train_size', 'test_size',
+            'train_loss', 'test_loss', 'train_accuracy', 'test_accuracy',
+            'training_time'
+        ])
+
+        # Train model using existing GPUDBNN methods
+        if self.model_config.enable_adaptive:
+            results = self.adaptive_fit_predict(max_rounds=self.model_config.epochs)
         else:
-            predictions_cpu = predictions  # Assume it's already a NumPy array
+            results = self.fit_predict()
 
-        if isinstance(true_labels, torch.Tensor):
-            true_labels_cpu = true_labels.cpu().numpy()
+        # Preprocess features and convert to tensors
+        X_tensor = self._preprocess_data(X, is_training=True)  # Preprocess data
+        y_tensor = torch.tensor(self.label_encoder.transform(y), dtype=torch.long).to(self.device)  # Encode labels
+
+        # Generate predictions and true labels
+        predictions = self.predict(X_tensor, batch_size=self.batch_size)
+        true_labels = y_tensor.cpu().numpy()
+
+        # Generate detailed predictions
+        predictions_df = self._generate_detailed_predictions(X_tensor, predictions, true_labels)
+
+
+        # Save results
+        results_path = os.path.join(output_dir, f'{dataset_name}_predictions.csv')
+        predictions_df.to_csv(results_path, index=False)
+
+        # Save training log
+        self.training_log.to_csv(log_file, index=False)
+
+        # Count number of features actually used (excluding high cardinality and excluded features)
+        n_features = len(X.columns)
+        n_excluded = len(getattr(self, 'high_cardinality_columns', []))
+
+        return {
+            'results_path': results_path,
+            'log_path': log_file,
+            'n_samples': len(self.data),
+            'n_features': n_features,
+            'n_excluded': n_excluded,
+            'training_results': results
+        }
+
+    def _generate_detailed_predictions(self, X: Union[pd.DataFrame, torch.Tensor], predictions: torch.Tensor, true_labels: Union[torch.Tensor, np.ndarray] = None) -> pd.DataFrame:
+        """
+        Generate detailed predictions with confidence metrics and metadata.
+
+        Args:
+            X: Input data (can be a Pandas DataFrame or PyTorch tensor).
+            predictions: Tensor containing the predicted class labels.
+            true_labels: Tensor or NumPy array containing the true labels (optional).
+
+        Returns:
+            DataFrame containing the complete input data, predictions, and posterior probabilities.
+        """
+        # Convert predictions to original class labels
+        pred_labels = self.label_encoder.inverse_transform(predictions)
+
+        # Handle input data (X) based on its type
+        if isinstance(X, torch.Tensor):
+            # Convert tensor to NumPy array, copy it, and then back to a DataFrame
+            X_np = X.cpu().numpy()  # Move tensor to CPU and convert to NumPy
+            results_df = pd.DataFrame(X_np, columns=[f'feature_{i}' for i in range(X_np.shape[1])])
+        elif isinstance(X, pd.DataFrame):
+            # If X is already a DataFrame, just copy it
+            results_df = X.copy()
         else:
-            true_labels_cpu = true_labels  # Assume it's already a NumPy array
+            raise TypeError(f"Unsupported input type for X: {type(X)}. Expected Pandas DataFrame or PyTorch tensor.")
 
-        # Convert numerical labels back to original class labels
-        pred_labels = self.label_encoder.inverse_transform(predictions_cpu)
-        true_labels_decoded = self.label_encoder.inverse_transform(true_labels_cpu)
+        # Add predictions
+        results_df['predicted_class'] = pred_labels
 
-        # Create results DataFrame
-        results_df = pd.DataFrame({
-            'true_class': true_labels_decoded,
-            'predicted_class': pred_labels
-        })
+        # Add true labels if provided
+        if true_labels is not None:
+            # Handle true_labels based on its type
+            if isinstance(true_labels, torch.Tensor):
+                true_labels_np = true_labels.cpu().numpy()  # Convert tensor to NumPy array
+            elif isinstance(true_labels, np.ndarray):
+                true_labels_np = true_labels  # Use as-is
+            else:
+                raise TypeError(f"Unsupported type for true_labels: {type(true_labels)}. Expected PyTorch tensor or NumPy array.")
 
-        # Add metadata
-        results_df['dataset'] = prefix
-        results_df['rejected_columns'] = str(self.high_cardinality_columns)
-        results_df['feature_columns'] = str(self.feature_columns)
-        results_df['target_column'] = self.target_column
+            results_df['true_class'] = self.label_encoder.inverse_transform(true_labels_np)
+
+        # Preprocess features for probability computation
+        X_processed = self._preprocess_data(X, is_training=False)
+        if isinstance(X_processed, torch.Tensor):
+            X_tensor = X_processed.clone().detach().to(self.device)
+        else:
+            X_tensor = torch.tensor(X_processed, dtype=torch.float32).to(self.device)
 
         # Compute probabilities in batches
-        batch_size = self.batch_size
+        batch_size = 32
         all_probabilities = []
 
-        for i in range(0, len(X), batch_size):
-            batch_end = min(i + batch_size, len(X))
-            batch_X = X[i:batch_end]
+        for i in range(0, len(X_tensor), batch_size):
+            batch_end = min(i + batch_size, len(X_tensor))
+            batch_X = X_tensor[i:batch_end]
 
             try:
                 if self.model_type == "Histogram":
@@ -1547,60 +1598,40 @@ class DBNN(GPUDBNN):
                 else:
                     raise ValueError(f"{self.model_type} is invalid")
 
-                # Ensure batch_probs is on CPU
-                if isinstance(batch_probs, torch.Tensor):
-                    batch_probs = batch_probs.cpu().numpy()
-                all_probabilities.append(batch_probs)
+                all_probabilities.append(batch_probs.cpu().numpy())
 
             except Exception as e:
                 print(f"Error computing probabilities for batch {i}: {str(e)}")
                 return None
 
         if all_probabilities:
-            probabilities = np.vstack(all_probabilities)
+            all_probabilities = np.vstack(all_probabilities)
         else:
-            print("No probabilities were computed successfully")
+            print("No probabilities were computed successfully", end="\r", flush=True)
             return None
 
-        # Get actual classes used in training
-        unique_classes = np.unique(self.label_encoder.transform(self.data[self.target_column]))
-        n_classes = len(unique_classes)
+        # Ensure we're only using valid class indices
+        valid_classes = self.label_encoder.classes_
+        n_classes = len(valid_classes)
 
-        # Verify probability array shape
-        if probabilities.shape[1] != n_classes:
-            print(f"Warning: Probability array shape ({probabilities.shape}) doesn't match number of classes ({n_classes})")
+        # Verify probability array shape matches number of classes
+        if all_probabilities.shape[1] != n_classes:
+            print(f"Warning: Probability array shape ({all_probabilities.shape}) doesn't match number of classes ({n_classes})")
             # Adjust probabilities array if necessary
-            if probabilities.shape[1] > n_classes:
-                probabilities = probabilities[:, :n_classes]
+            if all_probabilities.shape[1] > n_classes:
+                all_probabilities = all_probabilities[:, :n_classes]
             else:
                 # Pad with zeros if needed
-                pad_width = ((0, 0), (0, n_classes - probabilities.shape[1]))
-                probabilities = np.pad(probabilities, pad_width, mode='constant')
+                pad_width = ((0, 0), (0, n_classes - all_probabilities.shape[1]))
+                all_probabilities = np.pad(all_probabilities, pad_width, mode='constant')
 
-        # Add probability columns for actual classes used in training
-        for i, class_idx in enumerate(unique_classes):
-            class_name = self.label_encoder.inverse_transform([class_idx])[0]
-            results_df[f'prob_{class_name}'] = probabilities[:, i]
+        # Add probability columns for each valid class
+        for i, class_name in enumerate(valid_classes):
+            if i < all_probabilities.shape[1]:  # Safety check
+                results_df[f'prob_{class_name}'] = all_probabilities[:, i]
 
-        # Add confidence metrics
-        results_df['max_probability'] = probabilities.max(axis=1)
-
-        # Calculate confidence threshold based on number of classes
-        confidence_threshold = 1.5 / n_classes
-
-        # Get true class probabilities
-        true_indices = self.label_encoder.transform(results_df['true_class'])
-        true_probs = probabilities[np.arange(len(true_indices)), true_indices]
-
-        # Add confidence metrics
-        correct_prediction = (results_df['predicted_class'] == results_df['true_class'])
-        prob_diff = results_df['max_probability'] - true_probs
-
-        results_df['confidence_verdict'] = np.where(
-            (prob_diff < confidence_threshold) & correct_prediction,
-            'High Confidence',
-            'Low Confidence'
-        )
+        # Add maximum probability
+        results_df['max_probability'] = all_probabilities.max(axis=1)
 
         return results_df
 
@@ -2249,7 +2280,7 @@ class DBNN(GPUDBNN):
 
             # Process features and initialize model components if needed
             X_processed = self._preprocess_data(X, is_training=True)
-            self.X_tensor = torch.tensor(X_processed, dtype=torch.float32).to(self.device)
+            self.X_tensor =  X_processed.clone().detach().to(self.device)
             self.y_tensor = torch.LongTensor(y_encoded).to(self.device)
 
             # Handle model state based on flags
@@ -2379,7 +2410,8 @@ class DBNN(GPUDBNN):
                 y_train = self.y_tensor[train_indices]
 
                 # Train the model
-                save_path = f"round_{round_num}_predictions.csv"
+                save_path = f"data/{self.dataset_name}/Predictions/"
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
                 self.train_indices = train_indices
                 self.test_indices = test_indices
                 results = self.fit_predict(batch_size=batch_size, save_path=save_path)
@@ -2437,7 +2469,7 @@ class DBNN(GPUDBNN):
                     test_predictions_cpu = test_predictions.cpu().numpy()
                     # Generate classification report and confusion matrix
                     classification_report_str = classification_report(y_test_cpu, y_pred_cpu)
-                    self.print_colored_confusion_matrix(y_test_cpu, test_predictions_cpu)
+                    self.print_colored_confusion_matrix(y_test_cpu, test_predictions_cpu,header="Test Data")
 
                 # Reset the metrics printed flag
                 self._last_metrics_printed = False
@@ -2468,6 +2500,7 @@ class DBNN(GPUDBNN):
                         print("No suitable new samples found. Training complete.")
                         break
 
+
                 if new_train_indices:
                     # Reset to the best round's initial conditions
                     if self.best_round_initial_conditions is not None:
@@ -2478,9 +2511,6 @@ class DBNN(GPUDBNN):
                         self.bin_edges = self.best_round_initial_conditions['bin_edges']
                         self.gaussian_params = self.best_round_initial_conditions['gaussian_params']
 
-                    # Add new samples to the training set
-                    train_indices.extend(new_train_indices)
-                    test_indices = list(set(test_indices) - set(new_train_indices))
 
                 # Update training and test sets with new samples
                 train_indices.extend(new_train_indices)
@@ -2608,49 +2638,66 @@ class DBNN(GPUDBNN):
         DEBUG.log(f" Detected categorical columns: {categorical_columns}")
         return categorical_columns
 
-    def _preprocess_data(self, X: pd.DataFrame, is_training: bool = True) -> torch.Tensor:
+    def _preprocess_data(self, X: Union[pd.DataFrame, torch.Tensor], is_training: bool = True) -> torch.Tensor:
         """Preprocess data with improved error handling and column consistency, using batch processing."""
         print(f"[DEBUG] ====== Starting preprocessing ======")
-        DEBUG.log(f" Input shape: {X.shape}")
-        DEBUG.log(f" Input columns: {X.columns.tolist()}")
-        DEBUG.log(f" Input dtypes:\n{X.dtypes}")
+
+        # Check if X is a DataFrame or a tensor
+        if isinstance(X, pd.DataFrame):
+            DEBUG.log(f" Input shape: {X.shape}")
+            DEBUG.log(f" Input columns: {X.columns.tolist()}")
+            DEBUG.log(f" Input dtypes:\n{X.dtypes}")
+        else:
+            DEBUG.log(" Input is a tensor, skipping column-specific operations")
 
         # Make a copy to avoid modifying original data
-        X = X.copy()
+        if isinstance(X, pd.DataFrame):
+            X = X.copy()
+        else:
+            X = X.clone().detach()
 
         if is_training:
             DEBUG.log(" Training mode preprocessing")
             self.compute_global_statistics(X)
-            self.original_columns = X.columns.tolist()
+            self.original_columns = X.columns.tolist() if isinstance(X, pd.DataFrame) else None
 
             # Step 1: Remove high cardinality columns
             cardinality_threshold = self._calculate_cardinality_threshold()
             DEBUG.log(f" Cardinality threshold: {cardinality_threshold}")
-            X = self._remove_high_cardinality_columns(X, cardinality_threshold)
+            if isinstance(X, pd.DataFrame):
+                X = self._remove_high_cardinality_columns(X, cardinality_threshold)
             DEBUG.log(f" Shape after cardinality filtering: {X.shape}")
 
             # Store the features we'll actually use
-            self.feature_columns = X.columns.tolist()
+            self.feature_columns = X.columns.tolist() if isinstance(X, pd.DataFrame) else None
             DEBUG.log(f" Selected feature columns: {self.feature_columns}")
 
             # Store high cardinality columns for future reference
-            self.high_cardinality_columns = list(set(self.original_columns) - set(self.feature_columns))
-            if self.high_cardinality_columns:
-                DEBUG.log(f" Removed high cardinality columns: {self.high_cardinality_columns}")
+            if isinstance(X, pd.DataFrame):
+                self.high_cardinality_columns = list(set(self.original_columns) - set(self.feature_columns))
+                if self.high_cardinality_columns:
+                    DEBUG.log(f" Removed high cardinality columns: {self.high_cardinality_columns}")
 
             # Step 2: Handle categorical features
             DEBUG.log(" Starting categorical encoding")
             try:
-                X_encoded = self._encode_categorical_features(X, is_training)
+                if isinstance(X, pd.DataFrame):
+                    X_encoded = self._encode_categorical_features(X, is_training)
+                else:
+                    X_encoded = X  # Skip encoding if X is already a tensor
                 DEBUG.log(f" Shape after categorical encoding: {X_encoded.shape}")
-                DEBUG.log(f" Encoded dtypes:\n{X_encoded.dtypes}")
+                if isinstance(X_encoded, pd.DataFrame):
+                    DEBUG.log(f" Encoded dtypes:\n{X_encoded.dtypes}")
             except Exception as e:
                 DEBUG.log(f" Error in categorical encoding: {str(e)}")
                 raise
 
             # Step 3: Convert to numpy and check for issues
             try:
-                X_numpy = X_encoded.to_numpy()
+                if isinstance(X_encoded, pd.DataFrame):
+                    X_numpy = X_encoded.to_numpy()
+                else:
+                    X_numpy = X_encoded.cpu().numpy()
                 DEBUG.log(f" Numpy array shape: {X_numpy.shape}")
                 DEBUG.log(f" Any NaN: {np.isnan(X_numpy).any()}")
                 DEBUG.log(f" Any Inf: {np.isinf(X_numpy).any()}")
@@ -2689,7 +2736,7 @@ class DBNN(GPUDBNN):
 
             # Step 5: Compute feature pairs and bin edges AFTER preprocessing and filtering
             # Use the indices of the remaining features (0 to n-1)
-            remaining_feature_indices = list(range(len(self.feature_columns)))
+            remaining_feature_indices = list(range(len(self.feature_columns))) if self.feature_columns else list(range(X_scaled.shape[1]))
             DEBUG.log(f" Computing feature pairs from {len(remaining_feature_indices)} features")
 
             # Generate feature pairs using the updated set of features
@@ -2716,36 +2763,44 @@ class DBNN(GPUDBNN):
                 raise ValueError("Model not trained - feature columns not found")
 
             # For prediction, only try to use columns that were used during training
-            available_cols = set(X.columns)
-            needed_cols = set(self.feature_columns)
+            if isinstance(X, pd.DataFrame):
+                available_cols = set(X.columns)
+                needed_cols = set(self.feature_columns)
 
-            # Check for missing columns
-            missing_cols = needed_cols - available_cols
-            if missing_cols:
-                # Create missing columns with default values
-                for col in missing_cols:
-                    X[col] = 0
-                    DEBUG.log(f" Created missing column {col} with default value 0")
+                # Check for missing columns
+                missing_cols = needed_cols - available_cols
+                if missing_cols:
+                    # Create missing columns with default values
+                    for col in missing_cols:
+                        X[col] = 0
+                        DEBUG.log(f" Created missing column {col} with default value 0")
 
-            # Only keep the columns we used during training
-            X = X[self.feature_columns]
+                # Only keep the columns we used during training
+                X = X[self.feature_columns]
 
-            if hasattr(self, 'high_cardinality_columns'):
-                X = X.drop(columns=self.high_cardinality_columns, errors='ignore')
+                if hasattr(self, 'high_cardinality_columns'):
+                    X = X.drop(columns=self.high_cardinality_columns, errors='ignore')
 
             # Handle categorical features
             DEBUG.log(" Starting categorical encoding")
             try:
-                X_encoded = self._encode_categorical_features(X, is_training)
+                if isinstance(X, pd.DataFrame):
+                    X_encoded = self._encode_categorical_features(X, is_training)
+                else:
+                    X_encoded = X  # Skip encoding if X is already a tensor
                 DEBUG.log(f" Shape after categorical encoding: {X_encoded.shape}")
-                DEBUG.log(f" Encoded dtypes:\n{X_encoded.dtypes}")
+                if isinstance(X_encoded, pd.DataFrame):
+                    DEBUG.log(f" Encoded dtypes:\n{X_encoded.dtypes}")
             except Exception as e:
                 DEBUG.log(f" Error in categorical encoding: {str(e)}")
                 raise
 
             # Convert to numpy and check for issues
             try:
-                X_numpy = X_encoded.to_numpy()
+                if isinstance(X_encoded, pd.DataFrame):
+                    X_numpy = X_encoded.to_numpy()
+                else:
+                    X_numpy = X_encoded.cpu().numpy()
                 DEBUG.log(f" Numpy array shape: {X_numpy.shape}")
                 DEBUG.log(f" Any NaN: {np.isnan(X_numpy).any()}")
                 DEBUG.log(f" Any Inf: {np.isinf(X_numpy).any()}")
@@ -3448,7 +3503,7 @@ class DBNN(GPUDBNN):
             except:
                 pass
 
-    def print_colored_confusion_matrix(self, y_true, y_pred, class_labels=None):
+    def print_colored_confusion_matrix(self, y_true, y_pred, class_labels=None,header=None):
         # Decode numeric labels back to original alphanumeric labels
         y_true_labels = self.label_encoder.inverse_transform(y_true)
         y_pred_labels = self.label_encoder.inverse_transform(y_pred)
@@ -3477,7 +3532,7 @@ class DBNN(GPUDBNN):
                 cm[class_to_idx[t], class_to_idx[p]] += 1
 
         # Print confusion matrix with colors
-        print(f"{Colors.BOLD}Confusion Matrix and Class-wise Accuracy:{Colors.ENDC}")
+        print(f"{Colors.BOLD}Confusion Matrix and Class-wise Accuracy for [{header}]:{Colors.ENDC}")
         print(f"{'Actual/Predicted':<15}", end='')
         for label in all_classes:
             print(f"{str(label):<8}", end='')
@@ -3521,7 +3576,6 @@ class DBNN(GPUDBNN):
     def train(self, X_train: torch.Tensor, y_train: torch.Tensor, X_test: torch.Tensor, y_test: torch.Tensor, batch_size: int = 32):
         """Training loop with proper weight handling and enhanced progress tracking"""
         print("Starting training..." , end="\r", flush=True)
-
         # Store initial conditions at the start of training
         if self.best_round_initial_conditions is None:
             self.best_round_initial_conditions = {
@@ -3807,7 +3861,7 @@ class DBNN(GPUDBNN):
         df['reconstruction_error'] = np.mean((orig_np - recon_np) ** 2, axis=1)
 
         # Save to CSV
-        csv_path = os.path.join(recon_dir, f'{dataset_name}_reconstruction.csv')
+        csv_path = os.path.join(recon_dir, f'data/{dataset_name}/{dataset_name}_reconstruction.csv')
         df.to_csv(csv_path, index=False)
 
         # Create JSON-compatible output
@@ -3917,7 +3971,7 @@ class DBNN(GPUDBNN):
         print(f"{Colors.BOLD}Raw accuracy:{Colors.ENDC} {accuracy_color}{accuracy:.4%}{Colors.ENDC}\n")
 
         # Print confusion matrix with colors
-        self.print_colored_confusion_matrix(true_labels_array, pred_labels)
+        self.print_colored_confusion_matrix(true_labels_array, pred_labels,header="Test data")
 
         # Save detailed analysis to file
         analysis_file = f"classification_analysis_{self.dataset_name}.txt"
@@ -4194,6 +4248,7 @@ class DBNN(GPUDBNN):
         try:
             # Set a flag to indicate we're printing metrics
             self._last_metrics_printed = True
+
             # If this is a fresh training round, reset to the best round's initial conditions
             if self.best_round_initial_conditions is not None:
                 print("Starting fresh training with best round's initial conditions")
@@ -4202,7 +4257,6 @@ class DBNN(GPUDBNN):
                 self.feature_pairs = self.best_round_initial_conditions['feature_pairs']
                 self.bin_edges = self.best_round_initial_conditions['bin_edges']
                 self.gaussian_params = self.best_round_initial_conditions['gaussian_params']
-
 
             # Handle data preparation based on whether we're in adaptive training or final evaluation
             if self.in_adaptive_fit:
@@ -4250,7 +4304,6 @@ class DBNN(GPUDBNN):
                 X_train, X_test, y_train, y_test = self._get_train_test_split(
                     X_tensor, y_tensor)
 
-
                 # Convert split data back to tensors
                 X_train = torch.from_numpy(X_train).to(self.device, dtype=torch.float32)
                 X_test = torch.from_numpy(X_test).to(self.device, dtype=torch.float32)
@@ -4268,61 +4321,37 @@ class DBNN(GPUDBNN):
             # Save categorical encoders
             self._save_categorical_encoders()
 
-            # Make predictions
-            # Generate predictions for train, test, and combined datasets
-            print(f"{Colors.YELLOW}Generating predictions for train, test, and combined datasets{Colors.ENDC}")
+            # Make predictions on the entire dataset
+            print(f"{Colors.YELLOW}Generating predictions for the entire dataset{Colors.ENDC}")
+            X_all = torch.cat([X_train, X_test], dim=0)
+            y_all = torch.cat([y_train, y_test], dim=0)
+            all_predictions = self.predict(X_all, batch_size=batch_size)
 
-            # Predictions for train set
-            train_predictions = self.predict(X_train, batch_size=batch_size)
-            train_results = self._generate_detailed_predictions(X_train, train_predictions, y_train, prefix="train")
-            # Print colored confusion matrix
-            self.print_colored_confusion_matrix(y_train.cpu().numpy(), train_predictions.cpu().numpy())
-
-            # Predictions for test set
-            test_predictions = self.predict(X_test, batch_size=batch_size)
-            test_results = self._generate_detailed_predictions(X_test, test_predictions, y_test, prefix="test")
-            # Print colored confusion matrix
-            self.print_colored_confusion_matrix(y_test.cpu().numpy(), test_predictions.cpu().numpy())
-
-            # Verify prediction size matches test set (existing code)
-            if test_predictions.size(0) != y_test.size(0):
-                raise ValueError(f"Prediction size mismatch. Predictions: {test_predictions.size(0)}, Test set: {y_test.size(0)}")
-
-
-            # Predictions for combined dataset
-            combined_X = torch.cat([X_train, X_test], dim=0)
-            combined_y = torch.cat([y_train, y_test], dim=0)
-            combined_predictions = self.predict(combined_X, batch_size=batch_size)
-            combined_results = self._generate_detailed_predictions(combined_X, combined_predictions, combined_y, prefix="combined")
-
-            # Include metadata in the output
-            metadata = {
-                'rejected_columns': self.high_cardinality_columns,
-                'feature_columns': self.feature_columns,
-                'target_column': self.target_column,
-                'preprocessing_details': {
-                    'cardinality_threshold': self.cardinality_threshold,
-                    'cardinality_tolerance': self.cardinality_tolerance,
-                    'categorical_columns': list(self.categorical_encoders.keys())
-                }
-            }
-
+            # Generate detailed predictions for the entire dataset
+            all_results = self._generate_detailed_predictions(self.data, all_predictions, y_all)
 
             # Save results if path is provided
             if save_path:
-                # Save train predictions
-                train_results.to_csv(f"{save_path}_train_predictions.csv", index=False)
-                # Save test predictions
-                test_results.to_csv(f"{save_path}_test_predictions.csv", index=False)
-                # Save combined predictions
-                combined_results.to_csv(f"{save_path}_combined_predictions.csv", index=False)
+                # Save all predictions
+                #all_results.to_csv(f"{save_path}/all_predictions.csv", index=False)
+
                 # Save metadata
-                with open(f"{save_path}_metadata.json", 'w') as f:
+                metadata = {
+                    'rejected_columns': self.high_cardinality_columns,
+                    'feature_columns': self.feature_columns,
+                    'target_column': self.target_column,
+                    'preprocessing_details': {
+                        'cardinality_threshold': self.cardinality_threshold,
+                        'cardinality_tolerance': self.cardinality_tolerance,
+                        'categorical_columns': list(self.categorical_encoders.keys())
+                    }
+                }
+                with open(f"{save_path}/metadata.json", 'w') as f:
                     json.dump(metadata, f, indent=4)
 
-            # Calculate metrics for test set (existing code)
+            # Calculate metrics for test set
             y_test_cpu = y_test.cpu().numpy()
-            y_pred_cpu = test_predictions.cpu().numpy()
+            y_pred_cpu = all_predictions[self.test_indices].cpu().numpy()
 
             # Convert numerical labels back to original classes
             y_test_labels = self.label_encoder.inverse_transform(y_test_cpu)
@@ -4330,9 +4359,7 @@ class DBNN(GPUDBNN):
 
             # Prepare results
             results = {
-                'train_predictions': train_results,
-                'test_predictions': test_results,
-                'combined_predictions': combined_results,
+                'all_predictions': all_results,
                 'metadata': metadata,
                 'classification_report': classification_report(y_test_labels, y_pred_labels),
                 'confusion_matrix': confusion_matrix(y_test_labels, y_pred_labels),
@@ -4342,13 +4369,97 @@ class DBNN(GPUDBNN):
 
             print(f"Test Accuracy: {results['test_accuracy']:.4f}")
             self._save_model_components()
+
+
+            # Extract predictions for training and test data using stored indices
+            y_train_pred = all_predictions[self.train_indices].cpu().numpy()
+            y_test_pred = all_predictions[self.test_indices].cpu().numpy()
+
+            # Generate detailed predictions for the entire dataset
+            all_results = self._generate_detailed_predictions(self.data, all_predictions, y_all)
+            # Save training predictions
+            train_results = self._generate_detailed_predictions(
+                self.data.iloc[self.train_indices],  # Subset of data for training
+                y_train_pred,  # Predictions for training data
+                y_train.cpu().numpy()  # True labels for training data
+            )
+            train_results.to_csv(f"{save_path}/train_predictions.csv", index=False)
+
+            # Save test predictions
+            test_results = self._generate_detailed_predictions(
+                self.data.iloc[self.test_indices],  # Subset of data for testing
+                y_test_pred,  # Predictions for test data
+                y_test.cpu().numpy()  # True labels for test data
+            )
+            test_results.to_csv(f"{save_path}/test_predictions.csv", index=False)
+
+            # Save results if path is provided
+            if save_path:
+                # Save all predictions
+                all_results.to_csv(f"{save_path}/combined_predictions.csv", index=False)
+
+                # Save metadata
+                metadata = {
+                    'rejected_columns': self.high_cardinality_columns,
+                    'feature_columns': self.feature_columns,
+                    'target_column': self.target_column,
+                    'preprocessing_details': {
+                        'cardinality_threshold': self.cardinality_threshold,
+                        'cardinality_tolerance': self.cardinality_tolerance,
+                        'categorical_columns': list(self.categorical_encoders.keys())
+                    }
+                }
+                with open(f"{save_path}/metadata.json", 'w') as f:
+                    json.dump(metadata, f, indent=4)
+
+            # Calculate metrics for test set
+            y_test_cpu = y_test.cpu().numpy()
+            y_train_cpu = y_train.cpu().numpy()
+
+            # Convert numerical labels back to original classes
+            y_test_labels = self.label_encoder.inverse_transform(y_test_cpu)
+            y_train_labels = self.label_encoder.inverse_transform(y_train_cpu)
+            y_test_pred_labels = self.label_encoder.inverse_transform(y_test_pred)
+            y_train_pred_labels = self.label_encoder.inverse_transform(y_train_pred)
+
+            # Prepare results
+            results = {
+                'all_predictions': all_results,
+                'train_predictions': train_results,
+                'test_predictions': test_results,
+                'metadata': metadata,
+                'classification_report': classification_report(y_test_labels, y_test_pred_labels),
+                'confusion_matrix': confusion_matrix(y_test_labels, y_test_pred_labels),
+                'error_rates': error_rates,
+                'test_accuracy': (y_test_pred == y_test_cpu).mean(),
+                'train_accuracy': (y_train_pred == y_train_cpu).mean()
+            }
+
+            print(f"Training Accuracy: {results['train_accuracy']:.4f}")
+            print(f"Test Accuracy: {results['test_accuracy']:.4f}")
+            self._save_model_components()
+
+            # Generate point-colored confusion matrices for train, test, and combined data
+            print(f"{Colors.BOLD}Generating Confusion Matrices:{Colors.ENDC}")
+
+            # Confusion matrix for training data
+            self.print_colored_confusion_matrix(y_train_cpu, y_train_pred, header="Training Data")
+
+            # Confusion matrix for test data
+            self.print_colored_confusion_matrix(y_test_cpu, y_test_pred, header="Test Data")
+
+            # Confusion matrix for combined data
+            y_all_cpu = y_all.cpu().numpy()
+            self.print_colored_confusion_matrix(y_all_cpu, all_predictions.cpu().numpy(), header="Combined Data")
+
             return results
+
+
 
         except Exception as e:
             DEBUG.log(f"Error in fit_predict: {str(e)}")
             DEBUG.log(f"Traceback: {traceback.format_exc()}")
             raise
-
 
     def _get_model_components_filename(self):
         """Get filename for model components"""
@@ -4468,59 +4579,93 @@ class DBNN(GPUDBNN):
         DEBUG.log(f"Categorical encoding complete. Shape: {df_encoded.shape}")
         return df_encoded
 
-    def save_predictions(self, X: pd.DataFrame, predictions: torch.Tensor, output_file: str, true_labels: pd.Series = None, round_num: int = 0):
-        """
-        Save predictions with original data, predictions, and posterior probabilities for each round.
+    def save_predictions(self, X: pd.DataFrame, predictions: torch.Tensor, output_file: str, true_labels: pd.Series = None):
+        """Save predictions with proper class handling and probability computation"""
+        predictions = predictions.cpu()
 
-        Args:
-            X: Input DataFrame with original features (before preprocessing).
-            predictions: Predictions tensor from the model.
-            output_file: Path to save the predictions file.
-            true_labels: True labels (if available).
-            round_num: Current round number (used for column naming).
-        """
-        # Ensure predictions and true_labels are on CPU and converted to NumPy arrays
-        if isinstance(predictions, torch.Tensor):
-            predictions_cpu = predictions.cpu().numpy()
+        # Create a copy of the original dataset to preserve all columns
+        result_df = X.copy()
+
+        # Convert predictions to original class labels
+        pred_labels = self.label_encoder.inverse_transform(predictions.numpy())
+        result_df['predicted_class'] = pred_labels
+
+        if true_labels is not None:
+            result_df['true_class'] = true_labels
+
+        # Get preprocessed features for probability computation
+        X_processed = self._preprocess_data(X, is_training=False)
+        if isinstance(X_processed, torch.Tensor):
+            X_tensor = X_processed.clone().detach().to(self.device)
         else:
-            predictions_cpu = predictions  # Assume it's already a NumPy array
+            X_tensor = torch.tensor(X_processed, dtype=torch.float32).to(self.device)
 
-        if true_labels is not None and isinstance(true_labels, torch.Tensor):
-            true_labels_cpu = true_labels.cpu().numpy()
+        # Compute probabilities in batches
+        batch_size = 32
+        all_probabilities = []
+
+        for i in range(0, len(X_tensor), batch_size):
+            batch_end = min(i + batch_size, len(X_tensor))
+            batch_X = X_tensor[i:batch_end]
+
+            try:
+                if self.model_type == "Histogram":
+                    batch_probs, _ = self._compute_batch_posterior(batch_X)
+                elif self.model_type == "Gaussian":
+                    batch_probs, _ = self._compute_batch_posterior_std(batch_X)
+                else:
+                    raise ValueError(f"{self.model_type} is invalid")
+
+                all_probabilities.append(batch_probs.cpu().numpy())
+
+            except Exception as e:
+                print(f"Error computing probabilities for batch {i}: {str(e)}")
+                return None
+
+        if all_probabilities:
+            all_probabilities = np.vstack(all_probabilities)
         else:
-            true_labels_cpu = true_labels  # Assume it's already a NumPy array or None
+            print("No probabilities were computed successfully", end="\r", flush=True)
+            return None
 
-        # Convert numerical predictions to class labels
-        pred_labels = self.label_encoder.inverse_transform(predictions_cpu)
+        # Ensure we're only using valid class indices
+        valid_classes = self.label_encoder.classes_
+        n_classes = len(valid_classes)
 
-        # Compute posterior probabilities in batches
-        X_tensor = self._preprocess_data(X, is_training=False)  # Preprocess for prediction
-        posteriors, _ = self._compute_batch_posterior(X_tensor)  # Get posteriors for all classes
-        posteriors_cpu = posteriors.cpu().numpy()  # Move to CPU and convert to NumPy
+        # Verify probability array shape matches number of classes
+        if all_probabilities.shape[1] != n_classes:
+            print(f"Warning: Probability array shape ({all_probabilities.shape}) doesn't match number of classes ({n_classes})")
+            # Adjust probabilities array if necessary
+            if all_probabilities.shape[1] > n_classes:
+                all_probabilities = all_probabilities[:, :n_classes]
+            else:
+                # Pad with zeros if needed
+                pad_width = ((0, 0), (0, n_classes - all_probabilities.shape[1]))
+                all_probabilities = np.pad(all_probabilities, pad_width, mode='constant')
 
-        # Create a copy of the original DataFrame to preserve all columns
-        results_df = X.copy()
+        # Add probability columns for each valid class
+        for i, class_name in enumerate(valid_classes):
+            if i < all_probabilities.shape[1]:  # Safety check
+                result_df[f'prob_{class_name}'] = all_probabilities[:, i]
 
-        # Add true labels if available
-        if true_labels_cpu is not None:
-            results_df['true_class'] = true_labels_cpu
+        # Add maximum probability
+        result_df['max_probability'] = all_probabilities.max(axis=1)
 
-        # Add predictions and posteriors for the current round
-        results_df[f'round_{round_num}'] = [pred_labels[i] for i in range(len(pred_labels))]
-        results_df[f'round_{round_num}_pred'] = [posteriors_cpu[i].tolist() for i in range(len(posteriors_cpu))]
-
-        # Save the results to a CSV file
+        # Create the output directory if it doesn't exist
         dataset_name = os.path.splitext(os.path.basename(self.dataset_name))[0]
         output_dir = os.path.join('data', dataset_name, 'Predictions')
         os.makedirs(output_dir, exist_ok=True)
 
+        # Save the predictions file in the new directory
         output_path = os.path.join(output_dir, output_file)
-        results_df.to_csv(output_path, index=False)
-        print(f"Saved predictions for round {round_num} to {output_path}", end="\r", flush=True)
+        result_df.to_csv(output_path, index=False)
+        print(f"Saved predictions to {output_path}", end="\r", flush=True)
 
-        return results_df
+        if true_labels is not None:
+            # Verification analysis
+            self.verify_classifications(X, true_labels, predictions)
 
-
+        return result_df
 #--------------------------------------------------------------------------------------------------------------
 
     def _save_model_components(self):
@@ -4588,6 +4733,8 @@ class DBNN(GPUDBNN):
             print(f"[DEBUG] Model components file not found: {components_file}", end="\r", flush=True)
         return False
 
+
+
     def predict_and_save(self, save_path=None, batch_size: int = 32):
         """Make predictions on data and save them using best model weights"""
         try:
@@ -4643,7 +4790,6 @@ class DBNN(GPUDBNN):
             history = self.adaptive_fit_predict(max_rounds=self.max_epochs, batch_size=batch_size)
             results = self.fit_predict(batch_size=batch_size)
             return results
-
 
 
 #--------------------------------------------------Class Ends ----------------------------------------------------------
