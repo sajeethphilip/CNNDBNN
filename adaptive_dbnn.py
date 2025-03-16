@@ -1315,6 +1315,12 @@ class DBNN(GPUDBNN):
         # Add new attributes to track the best round
         self.best_round = None  # Track the best round number
         self.best_round_initial_conditions = None  # Save initial conditions of the best round
+        self.best_combined_accuracy = 0.00
+        self.best_model_weights = None
+
+        self.global_mean = None  # Store global mean
+        self.global_std = None   # Store global standard deviation
+        self.global_stats_computed = False  # Flag to track if stats are computed
 
         # Validate dataset_name
         if not dataset_name or not isinstance(dataset_name, str):
@@ -1428,7 +1434,7 @@ class DBNN(GPUDBNN):
             default_path = os.path.join('data', dataset_name, f"{dataset_name}.csv")
             if os.path.exists(default_path):
                 self.data_config['file_path'] = default_path
-                print(f"Using default data file: {default_path}")
+                print("\033[K" +f"Using default data file: {default_path}")
             else:
                 raise ValueError(f"No data file found for {dataset_name}")
 
@@ -1461,7 +1467,7 @@ class DBNN(GPUDBNN):
 
         if 'target_column' not in self.data_config:
             self.data_config['target_column'] = 'target'  # Set default target column
-            print(f"Using default target column: 'target'")
+            print("\033[K" +f"Using default target column: 'target'")
 
         X = self.data.drop(columns=[self.data_config['target_column']])
         y = self.data[self.data_config['target_column']]
@@ -1579,13 +1585,13 @@ class DBNN(GPUDBNN):
                 all_probabilities.append(batch_probs.cpu().numpy())
 
             except Exception as e:
-                print(f"Error computing probabilities for batch {i}: {str(e)}")
+                print("\033[K" +f"Error computing probabilities for batch {i}: {str(e)}")
                 return None
 
         if all_probabilities:
             all_probabilities = np.vstack(all_probabilities)
         else:
-            print("No probabilities were computed successfully", end="\r", flush=True)
+            print("\033[K" +"No probabilities were computed successfully", end="\r", flush=True)
             return None
 
         # Ensure we're only using valid class indices
@@ -1594,7 +1600,7 @@ class DBNN(GPUDBNN):
 
         # Verify probability array shape matches number of classes
         if all_probabilities.shape[1] != n_classes:
-            print(f"Warning: Probability array shape ({all_probabilities.shape}) doesn't match number of classes ({n_classes})")
+            print("\033[K" +f"Warning: Probability array shape ({all_probabilities.shape}) doesn't match number of classes ({n_classes})")
             # Adjust probabilities array if necessary
             if all_probabilities.shape[1] > n_classes:
                 all_probabilities = all_probabilities[:, :n_classes]
@@ -1716,7 +1722,7 @@ class DBNN(GPUDBNN):
 
                 # Check if this is a fresh start with random shuffling
                 if self.fresh_start and self.random_state == -1:
-                    print("Fresh start with random shuffling enabled")
+                    print("\033[K" +"Fresh start with random shuffling enabled")
                     # Perform 3 rounds of truly random shuffling
                     for _ in range(3):
                         df = df.iloc[np.random.permutation(len(df))].reset_index(drop=True)
@@ -1724,12 +1730,12 @@ class DBNN(GPUDBNN):
                     os.makedirs(data_dir, exist_ok=True)
                     # Save shuffled data
                     df.to_csv(shuffled_file, index=False)
-                    print(f"Saved shuffled data to {shuffled_file}")
+                    print("\033[K" +f"Saved shuffled data to {shuffled_file}")
                 elif os.path.exists(shuffled_file):
-                    print(f"Loading previously shuffled data from {shuffled_file}")
+                    print("\033[K" +f"Loading previously shuffled data from {shuffled_file}")
                     df = pd.read_csv(shuffled_file)
                 else:
-                    print("Using original data order (no shuffling required)")
+                    print("\033[K" +"Using original data order (no shuffling required)")
 
                 return df
 
@@ -1850,9 +1856,9 @@ class DBNN(GPUDBNN):
             for file in files_to_remove:
                 if os.path.exists(file):
                     os.remove(file)
-                    print(f"Removed existing model file: {file}")
+                    print("\033[K" +f"Removed existing model file: {file}")
         except Exception as e:
-            print(f"Warning: Error cleaning model files: {str(e)}")
+            print("\033[K" +f"Warning: Error cleaning model files: {str(e)}")
 
 
     #------------------------------------------Adaptive Learning--------------------------------------
@@ -1880,9 +1886,9 @@ class DBNN(GPUDBNN):
                 pickle.dump(train_indices, f)
             with open(os.path.join(epoch_dir, f'{self.model_type}_test_indices.pkl'), 'wb') as f:
                 pickle.dump(test_indices, f)
-            print(f"Saved epoch {epoch} data to {epoch_dir}")
+            print("\033[K" +f"Saved epoch {epoch} data to {epoch_dir}")
         except Exception as e:
-            print(f"Error saving epoch data: {str(e)}")
+            print("\033[K" +f"Error saving epoch data: {str(e)}")
 
     def load_epoch_data(self, epoch: int):
         """
@@ -1914,7 +1920,7 @@ class DBNN(GPUDBNN):
 
         # If no cardinalities provided, create a synthetic distribution
         if not cardinalities:
-            print("Warning: No cardinality data available. Using synthetic distribution based on percentile.")
+            print("\033[K" +"Warning: No cardinality data available. Using synthetic distribution based on percentile.")
             # Create a synthetic distribution around the percentile threshold
             cardinalities = np.array([1.0, 2.0, 5.0, 10.0, 20.0])  # Synthetic values
         else:
@@ -1930,18 +1936,18 @@ class DBNN(GPUDBNN):
         threshold = np.percentile(cardinalities, percentile)
 
         # Print detailed analysis
-        print(f"Cardinality Analysis:")
-        print(f"- Using {percentile}th percentile threshold")
-        print(f"- Distribution statistics:")
-        print(f"  - Min: {min_card:.2f}")
-        print(f"  - Max: {max_card:.2f}")
-        print(f"  - Mean: {mean_card:.2f}")
-        print(f"  - Median: {median_card:.2f}")
-        print(f"  - Threshold: {threshold:.2f}")
+        print("\033[K" +f"Cardinality Analysis:")
+        print("\033[K" +f"- Using {percentile}th percentile threshold")
+        print("\033[K" +f"- Distribution statistics:")
+        print("\033[K" +f"  - Min: {min_card:.2f}")
+        print("\033[K" +f"  - Max: {max_card:.2f}")
+        print("\033[K" +f"  - Mean: {mean_card:.2f}")
+        print("\033[K" +f"  - Median: {median_card:.2f}")
+        print("\033[K" +f"  - Threshold: {threshold:.2f}")
 
         # Print number of samples that would be included
         n_included = sum(c <= threshold for c in cardinalities)
-        print(f"- {n_included} out of {len(cardinalities)} samples below threshold "
+        print("\033[K" +f"- {n_included} out of {len(cardinalities)} samples below threshold "
               f"({(n_included/len(cardinalities))*100:.1f}%)")
 
         return threshold
@@ -2059,7 +2065,7 @@ class DBNN(GPUDBNN):
         sample_size = self.X_tensor[0].element_size() * self.X_tensor[0].nelement()
         self.batch_size = self._calculate_optimal_batch_size(sample_size)
         batch_size=self.batch_size
-        print(f"{Colors.GREEN}Upadated batch size to  {batch_size} using dynamic batchsize updater{Colors.ENDC}", end="\r", flush=True)
+        print("\033[K" +f"{Colors.GREEN}Upadated batch size to  {batch_size} using dynamic batchsize updater{Colors.ENDC}", end="\r", flush=True)
 
         test_predictions = torch.as_tensor(test_predictions, device=self.device)
         y_test = torch.as_tensor(y_test, device=self.device)
@@ -2182,7 +2188,7 @@ class DBNN(GPUDBNN):
                 # Clear cache after processing each batch
                 torch.cuda.empty_cache()
 
-        print(f"Total samples selected: {len(final_selected_indices)}                                                           ")
+        print("\033[K" +f"Total samples selected: {len(final_selected_indices)}                                                           ")
         return final_selected_indices
 
     def _save_reconstruction_plots(self, original_features: np.ndarray,
@@ -2234,8 +2240,13 @@ class DBNN(GPUDBNN):
         """Modified adaptive training strategy with proper fresh start handling"""
         DEBUG.log(" Starting adaptive_fit_predict")
         if not EnableAdaptive:
-            print("Adaptive learning is disabled. Using standard training.")
+            print("\033[K" +"Adaptive learning is disabled. Using standard training.")
             return self.fit_predict(batch_size=batch_size)
+
+        # Record the start time
+        start_time = time.time()
+        start_clock = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start_time))
+        print("\033[K" +f"{Colors.BOLD}{Colors.BLUE}Adaptive training started at: {start_clock}{Colors.ENDC}")
 
         self.in_adaptive_fit = True
         train_indices = []
@@ -2246,8 +2257,8 @@ class DBNN(GPUDBNN):
             X = self.data.drop(columns=[self.target_column])
             y = self.data[self.target_column]
             print(self.target_column)
-            print(f" Initial data shape: X={X.shape}, y={len(y)}")
-            print(f"Number of classes in data = {np.unique(y)}")
+            print("\033[K" +f" Initial data shape: X={X.shape}, y={len(y)}")
+            print("\033[K" +f"Number of classes in data = {np.unique(y)}")
             print(self.data.head)
             # Initialize label encoder if not already done
             if not hasattr(self.label_encoder, 'classes_'):
@@ -2264,7 +2275,7 @@ class DBNN(GPUDBNN):
             # Handle model state based on flags
             model_loaded = False
             if self.use_previous_model:
-                print("Loading previous model state")
+                print("\033[K" +"Loading previous model state")
                 if self._load_model_components():
                     self._load_best_weights()
                     self._load_categorical_encoders()
@@ -2272,7 +2283,7 @@ class DBNN(GPUDBNN):
 
                     if not self.fresh_start:
                         # Load previous training data
-                        print("Loading previous training data...")
+                        print("\033[K" +"Loading previous training data...")
                         prev_train_file = f'{self.dataset_name}_Last_training.csv'
                         if os.path.exists(prev_train_file):
                             prev_train_data = pd.read_csv(prev_train_file)
@@ -2292,19 +2303,19 @@ class DBNN(GPUDBNN):
                                 if matches.any():
                                     train_indices.append(idx)
 
-                            print(f"Loaded {len(train_indices)} previous training samples")
+                            print("\033[K" +f"Loaded {len(train_indices)} previous training samples")
 
                             # Initialize test indices as all indices not in training
                             test_indices = list(set(range(len(X))) - set(train_indices))
                         else:
-                            print("No previous training data found - starting fresh")
+                            print("\033[K" +"No previous training data found - starting fresh")
                             train_indices = []
                             test_indices = list(range(len(X)))
                 else:
-                    print("No previous model found - starting fresh")
+                    print("\033[K" +"No previous model found - starting fresh")
 
             if not model_loaded:
-                print("Initializing fresh model")
+                print("\033[K" +"Initializing fresh model")
                 self._clean_existing_model()
                 train_indices = []
                 test_indices = list(range(len(X)))
@@ -2357,7 +2368,7 @@ class DBNN(GPUDBNN):
 
             # Initialize training set if empty
             if len(train_indices) == 0:
-                print("Initializing new training set with minimum samples")
+                print("\033[K" +"Initializing new training set with minimum samples")
                 # Select minimum samples from each class for initial training
                 unique_classes = self.label_encoder.classes_
                 for class_label in unique_classes:
@@ -2376,9 +2387,9 @@ class DBNN(GPUDBNN):
 
             # Continue with training loop...
             for round_num in range(max_rounds):
-                print(f"Round {round_num + 1}/{max_rounds}")
-                print(f"Training set size: {len(train_indices)}")
-                print(f"Test set size: {len(test_indices)}")
+                print("\033[K" +f"Round {round_num + 1}/{max_rounds}")
+                print("\033[K" +f"Training set size: {len(train_indices)}")
+                print("\033[K" +f"Test set size: {len(test_indices)}")
 
                 # Save indices for this epoch
                 self.save_epoch_data(round_num, train_indices, test_indices)
@@ -2395,10 +2406,9 @@ class DBNN(GPUDBNN):
                 results = self.fit_predict(batch_size=batch_size, save_path=save_path)
 
                 # Check training accuracy
-                print(f"{Colors.GREEN}Predctions on Training data{Colors.ENDC}", end="\r", flush=True)
-                train_predictions = self.predict(X_train, batch_size=batch_size)
-                train_accuracy = (train_predictions == y_train.cpu()).float().mean()
-                print(f"Training accuracy: {train_accuracy:.4f}")
+                print("\033[K" +f"{Colors.GREEN}Predctions on Training data{Colors.ENDC}", end="\r", flush=True)
+                train_accuracy=results['train_accuracy']
+                print("\033[K" +f"Training accuracy: {train_accuracy:.4f}         ")
 
                 # Get test accuracy from results
                 test_accuracy = results['test_accuracy']
@@ -2411,7 +2421,7 @@ class DBNN(GPUDBNN):
                 elif train_accuracy > best_train_accuracy + improvement_threshold:
                     best_train_accuracy = train_accuracy
                     improved = True
-                    print(f"Improved training accuracy to {train_accuracy:.4f}")
+                    print("\033[K" +f"Improved training accuracy to {train_accuracy:.4f}")
 
                 if 'best_test_accuracy' not in locals():
                     best_test_accuracy = test_accuracy
@@ -2419,35 +2429,43 @@ class DBNN(GPUDBNN):
                 elif test_accuracy > best_test_accuracy + improvement_threshold:
                     best_test_accuracy = test_accuracy
                     improved = True
-                    print(f"Improved test accuracy to {test_accuracy:.4f}")
+                    print("\033[K" +f"Improved test accuracy to {test_accuracy:.4f}")
 
                 # Reset adaptive patience if improved
                 if improved:
                     adaptive_patience_counter = 0
                 else:
                     adaptive_patience_counter += 1
-                    print(f"No significant overall improvement. Adaptive patience: {adaptive_patience_counter}/5")
+                    print("\033[K" +f"No significant overall improvement. Adaptive patience: {adaptive_patience_counter}/5")
                     if adaptive_patience_counter >= 5:  # Using fixed value of 5 for adaptive patience
-                        print(f"No improvement in accuracy after 5 rounds of adding samples.")
-                        print(f"Best training accuracy achieved: {best_train_accuracy:.4f}")
-                        print(f"Best test accuracy achieved: {best_test_accuracy:.4f}")
-                        print("Stopping adaptive training.")
+                        print("\033[K" +f"No improvement in accuracy after 5 rounds of adding samples.")
+                        print("\033[K" +f"Best training accuracy achieved: {best_train_accuracy:.4f}")
+                        print("\033[K" +f"Best test accuracy achieved: {best_test_accuracy:.4f}")
+                        print("\033[K" +"Stopping adaptive training.")
                         break
 
-                # Evaluate test data
-                X_test = self.X_tensor[test_indices]
-                y_test = self.y_tensor[test_indices]
-                print(f"{Colors.YELLOW}Predctions on Test data{Colors.ENDC}", end="\r", flush=True)
-                test_predictions = self.predict(X_test, batch_size=batch_size)
+                # Evaluate test data using combined predictions from fit_predict
+                test_predictions = results['test_predictions']['predicted_class']
+                y_test = self.y_tensor[test_indices].cpu().numpy()
+
+                # Convert test_predictions to a NumPy array if it's a Pandas Series
+                if isinstance(test_predictions, pd.Series):
+                    test_predictions = test_predictions.to_numpy()
+
+                # Ensure test_predictions is numeric
+                if test_predictions.dtype == np.object_:
+                    # If predictions are class labels, convert them to numeric indices
+                    test_predictions = self.label_encoder.transform(test_predictions)
+                else:
+                    # If predictions are numeric but stored as object, cast to int64
+                    test_predictions = test_predictions.astype(np.int64)
 
                 # Only print test performance header if we didn't just print metrics in fit_predict
                 if not hasattr(self, '_last_metrics_printed') or not self._last_metrics_printed:
-                    print(f"{Colors.BLUE}Test Set Performance - Round {round_num + 1}{Colors.ENDC}")
-                    y_test_cpu = y_test.cpu().numpy()
-                    test_predictions_cpu = test_predictions.cpu().numpy()
+                    print("\033[K" +f"{Colors.BLUE}Test Set Performance - Round {round_num + 1}{Colors.ENDC}")
                     # Generate classification report and confusion matrix
-                    classification_report_str = classification_report(y_test_cpu, y_pred_cpu)
-                    self.print_colored_confusion_matrix(y_test_cpu, test_predictions_cpu,header="Test Data")
+                    classification_report_str = classification_report(y_test, test_predictions)
+                    self.print_colored_confusion_matrix(y_test, test_predictions, header="Test Data")
 
                 # Reset the metrics printed flag
                 self._last_metrics_printed = False
@@ -2455,7 +2473,7 @@ class DBNN(GPUDBNN):
                 # Check if we've achieved perfect accuracy
                 if train_accuracy == 1.0:
                     if len(test_indices) == 0:
-                        print("No more test samples available. Training complete.")
+                        print("\033[K" +"No more test samples available. Training complete.")
                         break
 
                     # Get new training samples from misclassified examples
@@ -2464,7 +2482,7 @@ class DBNN(GPUDBNN):
                     )
 
                     if not new_train_indices:
-                        print("Achieved 100% accuracy on all data. Training complete.                                           ")
+                        print("\033[K" +"Achieved 100% accuracy on all data. Training complete.                                           ")
                         self.in_adaptive_fit = False
                         return {'train_indices': [], 'test_indices': []}
 
@@ -2475,14 +2493,14 @@ class DBNN(GPUDBNN):
                     )
 
                     if not new_train_indices:
-                        print("No suitable new samples found. Training complete.")
+                        print("\033[K" +"No suitable new samples found. Training complete.")
                         break
 
 
                 if new_train_indices:
                     # Reset to the best round's initial conditions
                     if self.best_round_initial_conditions is not None:
-                        print(f"Resetting to initial conditions of best round {self.best_round}")
+                        print("\033[K" +f"Resetting to initial conditions of best round {self.best_round}")
                         self.current_W = self.best_round_initial_conditions['weights'].clone()
                         self.likelihood_params = self.best_round_initial_conditions['likelihood_params']
                         self.feature_pairs = self.best_round_initial_conditions['feature_pairs']
@@ -2493,10 +2511,20 @@ class DBNN(GPUDBNN):
                 # Update training and test sets with new samples
                 train_indices.extend(new_train_indices)
                 test_indices = list(set(test_indices) - set(new_train_indices))
-                print(f"Added {len(new_train_indices)} new samples to training set")
+                print("\033[K" +f"Added {len(new_train_indices)} new samples to training set")
 
                 # Save the current split
                 self.save_last_split(train_indices, test_indices)
+
+            # Record the end time
+            end_time = time.time()
+            end_clock = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(end_time))
+            elapsed_time = end_time - start_time
+
+            # Print the timing information
+            print("\033[K" +f"{Colors.BOLD}{Colors.BLUE}Adaptive training started at: {start_clock}{Colors.ENDC}")
+            print("\033[K" +f"{Colors.BOLD}{Colors.BLUE}Adaptive training ended at: {end_clock}{Colors.ENDC}")
+            print("\033[K" +f"{Colors.BOLD}{Colors.BLUE}Total adaptive training time: {elapsed_time:.2f} seconds{Colors.ENDC}")
 
             self.in_adaptive_fit = False
             return {'train_indices': train_indices, 'test_indices': test_indices}
@@ -2617,16 +2645,16 @@ class DBNN(GPUDBNN):
         return categorical_columns
 
     def _preprocess_data(self, X: Union[pd.DataFrame, torch.Tensor], is_training: bool = True) -> torch.Tensor:
-        """Preprocess data with improved error handling and column consistency, using batch processing."""
-        print(f"[DEBUG] ====== Starting preprocessing ======")
+        """Preprocess data with improved error handling and column consistency."""
+        DEBUG.log(f"Starting preprocessing (is_training={is_training})")
 
         # Check if X is a DataFrame or a tensor
         if isinstance(X, pd.DataFrame):
-            DEBUG.log(f" Input shape: {X.shape}")
-            DEBUG.log(f" Input columns: {X.columns.tolist()}")
-            DEBUG.log(f" Input dtypes:\n{X.dtypes}")
+            DEBUG.log(f"Input shape: {X.shape}")
+            DEBUG.log(f"Input columns: {X.columns.tolist()}")
+            DEBUG.log(f"Input dtypes:\n{X.dtypes}")
         else:
-            DEBUG.log(" Input is a tensor, skipping column-specific operations")
+            DEBUG.log("Input is a tensor, skipping column-specific operations")
 
         # Make a copy to avoid modifying original data
         if isinstance(X, pd.DataFrame):
@@ -2634,88 +2662,91 @@ class DBNN(GPUDBNN):
         else:
             X = X.clone().detach()
 
-        if is_training:
-            DEBUG.log(" Training mode preprocessing")
-            self.compute_global_statistics(X)
-            self.original_columns = X.columns.tolist() if isinstance(X, pd.DataFrame) else None
+        # Step 1: Compute global statistics only once during training
+        if is_training and not self.global_stats_computed:
+            DEBUG.log("Training mode preprocessing - computing global statistics")
+            self.compute_global_statistics(X)  # Compute global stats only once
+            self.global_stats_computed = True  # Mark stats as computed
+        elif is_training:
+            DEBUG.log("Training mode preprocessing - using precomputed global statistics")
 
-            # Step 1: Remove high cardinality columns
+        # Step 2: Handle high cardinality columns (only during training)
+        if is_training:
+            self.original_columns = X.columns.tolist() if isinstance(X, pd.DataFrame) else None
             cardinality_threshold = self._calculate_cardinality_threshold()
-            DEBUG.log(f" Cardinality threshold: {cardinality_threshold}")
+            DEBUG.log(f"Cardinality threshold: {cardinality_threshold}")
             if isinstance(X, pd.DataFrame):
                 X = self._remove_high_cardinality_columns(X, cardinality_threshold)
-            DEBUG.log(f" Shape after cardinality filtering: {X.shape}")
+            DEBUG.log(f"Shape after cardinality filtering: {X.shape}")
 
             # Store the features we'll actually use
             self.feature_columns = X.columns.tolist() if isinstance(X, pd.DataFrame) else None
-            DEBUG.log(f" Selected feature columns: {self.feature_columns}")
+            DEBUG.log(f"Selected feature columns: {self.feature_columns}")
 
             # Store high cardinality columns for future reference
             if isinstance(X, pd.DataFrame):
                 self.high_cardinality_columns = list(set(self.original_columns) - set(self.feature_columns))
                 if self.high_cardinality_columns:
-                    DEBUG.log(f" Removed high cardinality columns: {self.high_cardinality_columns}")
+                    DEBUG.log(f"Removed high cardinality columns: {self.high_cardinality_columns}")
 
-            # Step 2: Handle categorical features
-            DEBUG.log(" Starting categorical encoding")
-            try:
-                if isinstance(X, pd.DataFrame):
-                    X_encoded = self._encode_categorical_features(X, is_training)
-                else:
-                    X_encoded = X  # Skip encoding if X is already a tensor
-                DEBUG.log(f" Shape after categorical encoding: {X_encoded.shape}")
-                if isinstance(X_encoded, pd.DataFrame):
-                    DEBUG.log(f" Encoded dtypes:\n{X_encoded.dtypes}")
-            except Exception as e:
-                DEBUG.log(f" Error in categorical encoding: {str(e)}")
-                raise
+        # Step 3: Handle categorical features
+        DEBUG.log("Starting categorical encoding")
+        try:
+            if isinstance(X, pd.DataFrame):
+                X_encoded = self._encode_categorical_features(X, is_training)
+            else:
+                X_encoded = X  # Skip encoding if X is already a tensor
+            DEBUG.log(f"Shape after categorical encoding: {X_encoded.shape}")
+            if isinstance(X_encoded, pd.DataFrame):
+                DEBUG.log(f"Encoded dtypes:\n{X_encoded.dtypes}")
+        except Exception as e:
+            DEBUG.log(f"Error in categorical encoding: {str(e)}")
+            raise
 
-            # Step 3: Convert to numpy and check for issues
-            try:
-                if isinstance(X_encoded, pd.DataFrame):
-                    X_numpy = X_encoded.to_numpy()
-                else:
-                    X_numpy = X_encoded.cpu().numpy()
-                DEBUG.log(f" Numpy array shape: {X_numpy.shape}")
-                DEBUG.log(f" Any NaN: {np.isnan(X_numpy).any()}")
-                DEBUG.log(f" Any Inf: {np.isinf(X_numpy).any()}")
-            except Exception as e:
-                DEBUG.log(f" Error converting to numpy: {str(e)}")
-                raise
+        # Step 4: Convert to numpy and check for issues
+        try:
+            if isinstance(X_encoded, pd.DataFrame):
+                X_numpy = X_encoded.to_numpy()
+            else:
+                X_numpy = X_encoded.cpu().numpy()
+            DEBUG.log(f"Numpy array shape: {X_numpy.shape}")
+            DEBUG.log(f"Any NaN: {np.isnan(X_numpy).any()}")
+            DEBUG.log(f"Any Inf: {np.isinf(X_numpy).any()}")
+        except Exception as e:
+            DEBUG.log(f"Error converting to numpy: {str(e)}")
+            raise
 
-            # Step 4: Scale the features in batches
-            try:
-                # Initialize an empty array for scaled features
-                X_scaled = np.zeros_like(X_numpy)
-                batch_size = 1024  # Adjust based on available memory
+        # Step 5: Scale the features using precomputed global statistics
+        try:
+            X_scaled = np.zeros_like(X_numpy)
+            batch_size = 1024  # Adjust based on available memory
 
-                # Process data in batches
-                for i in range(0, len(X_numpy), batch_size):
-                    batch_end = min(i + batch_size, len(X_numpy))
-                    batch_X = X_numpy[i:batch_end]
+            for i in range(0, len(X_numpy), batch_size):
+                batch_end = min(i + batch_size, len(X_numpy))
+                batch_X = X_numpy[i:batch_end]
 
-                    # Scale the batch
-                    if is_training:
-                        X_scaled[i:batch_end] = self.scaler.fit_transform(batch_X)
-                    else:
-                        X_scaled[i:batch_end] = self.scaler.transform(batch_X)
+                # Scale the batch using precomputed global statistics
+                X_scaled[i:batch_end] = (batch_X - self.global_mean) / self.global_std
 
-                DEBUG.log(f" Scaling successful")
-            except Exception as e:
-                DEBUG.log(f" Standard scaling failed: {str(e)}. Using manual scaling")
-                if X_numpy.size == 0:
-                    print("[WARNING] Empty feature array! Returning original data")
-                    X_scaled = X_numpy
-                else:
-                    means = np.nanmean(X_numpy, axis=0)
-                    stds = np.nanstd(X_numpy, axis=0)
-                    stds[stds == 0] = 1
-                    X_scaled = (X_numpy - means) / stds
+            DEBUG.log("Scaling successful")
+        except Exception as e:
+            DEBUG.log(f"Standard scaling failed: {str(e)}. Using manual scaling")
+            if X_numpy.size == 0:
+                print("\033[K" +"[WARNING] Empty feature array! Returning original data")
+                X_scaled = X_numpy
+            else:
+                means = np.nanmean(X_numpy, axis=0)
+                stds = np.nanstd(X_numpy, axis=0)
+                stds[stds == 0] = 1
+                X_scaled = (X_numpy - means) / stds
 
-            # Step 5: Compute feature pairs and bin edges AFTER preprocessing and filtering
-            # Use the indices of the remaining features (0 to n-1)
+        # Step 6: Convert scaled data to a PyTorch tensor
+        X_tensor = torch.tensor(X_scaled, dtype=torch.float32, device=self.device)
+
+        # Step 7: Compute feature pairs and bin edges (only during training)
+        if is_training:
             remaining_feature_indices = list(range(len(self.feature_columns))) if self.feature_columns else list(range(X_scaled.shape[1]))
-            DEBUG.log(f" Computing feature pairs from {len(remaining_feature_indices)} features")
+            DEBUG.log(f"Computing feature pairs from {len(remaining_feature_indices)} features")
 
             # Generate feature pairs using the updated set of features
             self.feature_pairs = self._generate_feature_combinations(
@@ -2723,100 +2754,14 @@ class DBNN(GPUDBNN):
                 self.config.get('likelihood_config', {}).get('feature_group_size', 2),
                 self.config.get('likelihood_config', {}).get('max_combinations', None)
             )
-            DEBUG.log(f" Generated {len(self.feature_pairs)} feature pairs")
-
-            # Convert scaled data to a PyTorch tensor before computing bin edges
-            X_tensor = torch.tensor(X_scaled, dtype=torch.float32, device=self.device)
+            DEBUG.log(f"Generated {len(self.feature_pairs)} feature pairs")
 
             # Compute bin edges using the preprocessed data (now a tensor)
             self.bin_edges = self._compute_bin_edges(X_tensor, self.config.get('likelihood_config', {}).get('bin_sizes', [20]))
-            DEBUG.log(f" Computed bin edges for {len(self.bin_edges)} feature pairs")
+            DEBUG.log(f"Computed bin edges for {len(self.bin_edges)} feature pairs")
 
-            DEBUG.log(f" Final preprocessed shape: {X_scaled.shape}")
-            return X_tensor
-
-        else:
-            DEBUG.log(" Prediction mode preprocessing")
-            if not hasattr(self, 'feature_columns'):
-                raise ValueError("Model not trained - feature columns not found")
-
-            # For prediction, only try to use columns that were used during training
-            if isinstance(X, pd.DataFrame):
-                available_cols = set(X.columns)
-                needed_cols = set(self.feature_columns)
-
-                # Check for missing columns
-                missing_cols = needed_cols - available_cols
-                if missing_cols:
-                    # Create missing columns with default values
-                    for col in missing_cols:
-                        X[col] = 0
-                        DEBUG.log(f" Created missing column {col} with default value 0")
-
-                # Only keep the columns we used during training
-                X = X[self.feature_columns]
-
-                if hasattr(self, 'high_cardinality_columns'):
-                    X = X.drop(columns=self.high_cardinality_columns, errors='ignore')
-
-            # Handle categorical features
-            DEBUG.log(" Starting categorical encoding")
-            try:
-                if isinstance(X, pd.DataFrame):
-                    X_encoded = self._encode_categorical_features(X, is_training)
-                else:
-                    X_encoded = X  # Skip encoding if X is already a tensor
-                DEBUG.log(f" Shape after categorical encoding: {X_encoded.shape}")
-                if isinstance(X_encoded, pd.DataFrame):
-                    DEBUG.log(f" Encoded dtypes:\n{X_encoded.dtypes}")
-            except Exception as e:
-                DEBUG.log(f" Error in categorical encoding: {str(e)}")
-                raise
-
-            # Convert to numpy and check for issues
-            try:
-                if isinstance(X_encoded, pd.DataFrame):
-                    X_numpy = X_encoded.to_numpy()
-                else:
-                    X_numpy = X_encoded.cpu().numpy()
-                DEBUG.log(f" Numpy array shape: {X_numpy.shape}")
-                DEBUG.log(f" Any NaN: {np.isnan(X_numpy).any()}")
-                DEBUG.log(f" Any Inf: {np.isinf(X_numpy).any()}")
-            except Exception as e:
-                DEBUG.log(f" Error converting to numpy: {str(e)}")
-                raise
-
-            # Scale the features in batches
-            try:
-                X_scaled = np.zeros_like(X_numpy)
-                batch_size = 1024  # Adjust based on available memory
-
-                for i in range(0, len(X_numpy), batch_size):
-                    batch_end = min(i + batch_size, len(X_numpy))
-                    batch_X = X_numpy[i:batch_end]
-                    X_scaled[i:batch_end] = self.scaler.transform(batch_X)
-
-                DEBUG.log(f" Scaling successful")
-            except Exception as e:
-                DEBUG.log(f" Standard scaling failed: {str(e)}. Using manual scaling")
-                if X_numpy.size == 0:
-                    print("[WARNING] Empty feature array! Returning original data")
-                    X_scaled = X_numpy
-                else:
-                    means = np.nanmean(X_numpy, axis=0)
-                    stds = np.nanstd(X_numpy, axis=0)
-                    stds[stds == 0] = 1
-                    X_scaled = (X_numpy - means) / stds
-
-            DEBUG.log(f" Final preprocessed shape: {X_scaled.shape}")
-
-            # Convert to tensor in batches to avoid GPU memory issues
-            X_tensor = torch.zeros((len(X_scaled), X_scaled.shape[1]), dtype=torch.float32, device=self.device)
-            for i in range(0, len(X_scaled), batch_size):
-                batch_end = min(i + batch_size, len(X_scaled))
-                X_tensor[i:batch_end] = torch.tensor(X_scaled[i:batch_end], dtype=torch.float32).to(self.device)
-
-            return X_tensor
+        DEBUG.log(f"Final preprocessed shape: {X_scaled.shape}")
+        return X_tensor
 
     def _generate_feature_combinations(self, feature_indices: Union[List[int], int], group_size: int = None, max_combinations: int = None) -> torch.Tensor:
         """Generate and save/load consistent feature combinations, treating groups as unique sets."""
@@ -2830,11 +2775,11 @@ class DBNN(GPUDBNN):
         bin_sizes = self.config.get('bin_sizes', [20])
 
         # Debug: Print parameters
-        print(f"[DEBUG] Generating feature combinations after filtering out features with high cardinality set by the conf file:")
-        print(f"- n_features: {len(feature_indices)}")
-        print(f"- group_size: {group_size}")
-        print(f"- max_combinations: {max_combinations}")
-        print(f"- bin_sizes: {bin_sizes}")
+        print("\033[K" +f"[DEBUG] Generating feature combinations after filtering out features with high cardinality set by the conf file:")
+        print("\033[K" +f"- n_features: {len(feature_indices)}")
+        print("\033[K" +f"- group_size: {group_size}")
+        print("\033[K" +f"- max_combinations: {max_combinations}")
+        print("\033[K" +f"- bin_sizes: {bin_sizes}")
 
         # Create path for storing feature combinations
         dataset_folder = os.path.splitext(os.path.basename(self.dataset_name))[0]
@@ -2843,16 +2788,16 @@ class DBNN(GPUDBNN):
 
         # Check if combinations already exist
         if os.path.exists(combinations_path):
-            print("---------------------BEWARE!! Remove if you get Error on retraining------------------------")
-            print(f"[DEBUG] Loading cached feature combinations from {combinations_path}")
-            print("---------------------BEWARE!! Remove if you get Error on retraining------------------------")
+            print("\033[K" +"---------------------BEWARE!! Remove if you get Error on retraining------------------------")
+            print("\033[K" +f"[DEBUG] Loading cached feature combinations from {combinations_path}")
+            print("\033[K" +"---------------------BEWARE!! Remove if you get Error on retraining------------------------")
             with open(combinations_path, 'rb') as f:
                 combinations_tensor = pickle.load(f)
-            print(f"[DEBUG] Loaded feature combinations: {combinations_tensor.shape}")
+            print("\033[K" +f"[DEBUG] Loaded feature combinations: {combinations_tensor.shape}")
             return combinations_tensor.to(self.device)
 
         # Generate new combinations if none exist
-        print(f"[DEBUG] Generating new feature combinations for {self.dataset_name}")
+        print("\033[K" +f"[DEBUG] Generating new feature combinations for {self.dataset_name}")
         from itertools import combinations
         all_combinations = list(combinations(feature_indices, group_size))
         unique_combinations = list(set([tuple(sorted(comb)) for comb in all_combinations]))
@@ -2863,7 +2808,7 @@ class DBNN(GPUDBNN):
         os.makedirs(os.path.dirname(combinations_path), exist_ok=True)
         with open(combinations_path, 'wb') as f:
             pickle.dump(combinations_tensor.cpu(), f)
-        print(f"[DEBUG] Saved {len(unique_combinations)} unique feature combinations to {combinations_path}")
+        print("\033[K" +f"[DEBUG] Saved {len(unique_combinations)} unique feature combinations to {combinations_path}")
 
         return combinations_tensor
 #-----------------------------------------------------------------------------Bin model ---------------------------
@@ -2871,7 +2816,7 @@ class DBNN(GPUDBNN):
     def _compute_pairwise_likelihood_parallel(self, dataset: torch.Tensor, labels: torch.Tensor, feature_dims: int):
         """Optimized non-parametric likelihood computation with precomputed feature pairs and bin edges"""
         DEBUG.log(" Starting _compute_pairwise_likelihood_parallel")
-        print("Computing pairwise likelihoods...")
+        print("\033[K" +"Computing pairwise likelihoods...")
 
         # Input validation and preparation
         dataset = torch.as_tensor(dataset, device=self.device).contiguous()
@@ -3038,7 +2983,7 @@ class DBNN(GPUDBNN):
     def _compute_pairwise_likelihood_parallel_std(self, dataset: torch.Tensor, labels: torch.Tensor, feature_dims: int):
         """Optimized Gaussian likelihood computation with precomputed feature pairs and Gaussian parameters"""
         DEBUG.log(" Starting _compute_pairwise_likelihood_parallel_std")
-        print("Computing Gaussian likelihoods...")
+        print("\033[K" +"Computing Gaussian likelihoods...")
 
         # Input validation and preparation
         dataset = torch.as_tensor(dataset, device=self.device).contiguous()
@@ -3294,8 +3239,8 @@ class DBNN(GPUDBNN):
         # Save testing data
         test_data = pd.concat([X.iloc[test_indices], y.iloc[test_indices]], axis=1)
         test_data.to_csv(f'{dataset_name}_Last_testing.csv', header=True, index=False)
-        print(f"Last testing data is saved to {dataset_name}_Last_testing.csv")
-        print(f"Last training data is saved to {dataset_name}_Last_training.csv")
+        print("\033[K" +f"Last testing data is saved to {dataset_name}_Last_testing.csv")
+        print("\033[K" +f"Last training data is saved to {dataset_name}_Last_training.csv")
 
     def load_last_known_split(self):
         """Load the last known good training/testing split with proper column alignment"""
@@ -3334,14 +3279,14 @@ class DBNN(GPUDBNN):
                         test_indices.append(idx)
 
                 if train_indices or test_indices:
-                    print(f"Loaded previous split - Training: {len(train_indices)}, Testing: {len(test_indices)}")
+                    print("\033[K" +f"Loaded previous split - Training: {len(train_indices)}, Testing: {len(test_indices)}")
                     return train_indices, test_indices
                 else:
-                    print("No valid indices found in previous split")
+                    print("\033[K" +"No valid indices found in previous split")
                     return None, None
 
             except Exception as e:
-                print(f"Error loading previous split: {str(e)}")
+                print("\033[K" +f"Error loading previous split: {str(e)}")
                 return None, None
 
         return None, None
@@ -3353,7 +3298,7 @@ class DBNN(GPUDBNN):
         This function ensures all batches are processed and predictions are concatenated correctly.
         """
         # Store current weights temporarily
-        #print("Making predictions...")
+        #print("\033[K" +"Making predictions...")
         temp_W = self.current_W
         n_batches = (len(X) + batch_size - 1) // batch_size
         pred_pbar = tqdm(total=n_batches, desc="Prediction batches")
@@ -3447,9 +3392,9 @@ class DBNN(GPUDBNN):
                         device=self.device
                     )
 
-                print(f"Loaded best weights from {weights_file}")
+                print("\033[K" +f"Loaded best weights from {weights_file}")
             except Exception as e:
-                print(f"Warning: Could not load weights from {weights_file}: {str(e)}")
+                print("\033[K" +f"Warning: Could not load weights from {weights_file}: {str(e)}")
                 self.best_W = None
 
     def _init_keyboard_listener(self):
@@ -3459,7 +3404,7 @@ class DBNN(GPUDBNN):
                 import Xlib.display
                 self._display = Xlib.display.Display()
             except Exception as e:
-                print(f"Warning: Could not initialize X display: {e}")
+                print("\033[K" +f"Warning: Could not initialize X display: {e}")
                 return None
 
         try:
@@ -3469,7 +3414,7 @@ class DBNN(GPUDBNN):
                 _display=self._display  # Pass shared display connection
             )
         except Exception as e:
-            print(f"Warning: Could not create keyboard listener: {e}")
+            print("\033[K" +f"Warning: Could not create keyboard listener: {e}")
             return None
 
     def _cleanup_keyboard(self):
@@ -3510,17 +3455,17 @@ class DBNN(GPUDBNN):
                 cm[class_to_idx[t], class_to_idx[p]] += 1
 
         # Print confusion matrix with colors
-        print(f"{Colors.BOLD}Confusion Matrix and Class-wise Accuracy for [{header}]:{Colors.ENDC}")
-        print(f"{'Actual/Predicted':<15}", end='')
+        print("\033[K" +f"{Colors.BOLD}Confusion Matrix and Class-wise Accuracy for [{header}]:{Colors.ENDC}")
+        print("\033[K" +f"{'Actual/Predicted':<15}", end='')
         for label in all_classes:
-            print(f"{str(label):<8}", end='')
-        print("Accuracy")
-        print("-" * (15 + 8 * n_classes + 10))
+            print("\033[K" +f"{str(label):<8}", end='')
+        print("\033[K" +"Accuracy")
+        print("\033[K" +"-" * (15 + 8 * n_classes + 10))
 
         # Print matrix with colors
         for i in range(n_classes):
             # Print actual class label
-            print(f"{Colors.BOLD}{str(all_classes[i]):<15}{Colors.ENDC}", end='')
+            print("\033[K" +f"{Colors.BOLD}{str(all_classes[i]):<15}{Colors.ENDC}", end='')
 
             # Print confusion matrix row
             for j in range(n_classes):
@@ -3530,7 +3475,7 @@ class DBNN(GPUDBNN):
                 else:
                     # Incorrect predictions in red
                     color = Colors.RED
-                print(f"{color}{cm[i, j]:<8}{Colors.ENDC}", end='')
+                print("\033[K" +f"{color}{cm[i, j]:<8}{Colors.ENDC}", end='')
 
             # Print class accuracy with color based on performance
             acc = cm[i, i] / cm[i].sum() if cm[i].sum() > 0 else 0.0
@@ -3540,20 +3485,29 @@ class DBNN(GPUDBNN):
                 color = Colors.YELLOW
             else:
                 color = Colors.BLUE
-            print(f"{color}{acc:>7.2%}{Colors.ENDC}")
+            print("\033[K" +f"{color}{acc:>7.2%}{Colors.ENDC}")
 
         # Print overall accuracy
         total_correct = np.diag(cm).sum()
         total_samples = cm.sum()
         if total_samples > 0:
             overall_acc = total_correct / total_samples
-            print("-" * (15 + 8 * n_classes + 10))
+            print("\033[K" +"-" * (15 + 8 * n_classes + 10))
             color = Colors.GREEN if overall_acc >= 0.9 else Colors.YELLOW if overall_acc >= 0.7 else Colors.BLUE
-            print(f"{Colors.BOLD}Overall Accuracy: {color}{overall_acc:.2%}{Colors.ENDC}")
+            print("\033[K" +f"{Colors.BOLD}Overall Accuracy: {color}{overall_acc:.2%}{Colors.ENDC}")
+            print("\033[K" +f"Best Overall Accuracy till now is: {Colors.GREEN}{self.best_combined_accuracy:.2%}{Colors.ENDC}")
 
     def train(self, X_train: torch.Tensor, y_train: torch.Tensor, X_test: torch.Tensor, y_test: torch.Tensor, batch_size: int = 32):
         """Training loop with proper weight handling and enhanced progress tracking"""
-        print("Starting training..." , end="\r", flush=True)
+        print("\033[K" +"Starting training..." , end="\r", flush=True)
+        # Initialize best combined accuracy if not already set
+        if not hasattr(self, 'best_combined_accuracy'):
+            self.best_combined_accuracy = 0.0
+
+        # Initialize best model weights if not already set
+        if not hasattr(self, 'best_model_weights'):
+            self.best_model_weights = None
+
         # Store initial conditions at the start of training
         if self.best_round_initial_conditions is None:
             self.best_round_initial_conditions = {
@@ -3647,7 +3601,7 @@ class DBNN(GPUDBNN):
                 self.current_W = train_weights
 
                 # Training metrics
-                print(f"{Colors.GREEN}Predctions on Training data{Colors.ENDC}", end="\r", flush=True)
+                print("\033[K" +f"{Colors.GREEN}Predctions on Training data{Colors.ENDC}", end="\r", flush=True)
                 train_predictions = self.predict(X_train, batch_size=batch_size)
                 train_accuracy = (train_predictions == y_train.cpu()).float().mean()
                 train_loss = n_errors / n_samples
@@ -3675,10 +3629,10 @@ class DBNN(GPUDBNN):
                 'train_acc': f"{train_accuracy:.4f} (best: {best_train_accuracy:.4f})"
             })
 
-            print(f"Epoch {epoch + 1}/{self.max_epochs}:", end="\r", flush=True)
-            print(f"Training time: {Colors.highlight_time(training_time)} seconds", end="\r", flush=True)
-            print(f"Train error rate: {Colors.color_value(train_error_rate, prev_train_error, False)} (best: {1-best_train_accuracy:.4f})", end="\r", flush=True)
-            print(f"Train accuracy: {Colors.color_value(train_accuracy, prev_train_accuracy, True)} (best: {Colors.GREEN}{best_train_accuracy:.4f}{Colors.ENDC})", end="\r", flush=True)
+            #print("\033[K" +f"Epoch {epoch + 1}/{self.max_epochs}:", end="\r", flush=True)
+            #print("\033[K" +f"Training time: {Colors.highlight_time(training_time)} seconds", end="\r", flush=True)
+            #print("\033[K" +f"Train error rate: {Colors.color_value(train_error_rate, prev_train_error, False)} (best: {1-best_train_accuracy:.4f})", end="\r", flush=True)
+            #print("\033[K" +f"Train accuracy: {Colors.color_value(train_accuracy, prev_train_accuracy, True)} (best: {Colors.GREEN}{best_train_accuracy:.4f}{Colors.ENDC})", end="\r", flush=True)
 
             # Update previous values for next iteration
             prev_train_error = train_error_rate
@@ -3701,7 +3655,7 @@ class DBNN(GPUDBNN):
                 improvement = self.best_error - train_error_rate
                 self.best_error = train_error_rate
                 self.best_W = self.current_W.clone()  # Save current weights as best
-                self._save_best_weights()
+                #self._save_best_weights()   # move it to train_fit
 
                 if improvement <= 0.001:
                     patience_counter += 1
@@ -3713,7 +3667,7 @@ class DBNN(GPUDBNN):
 
             # Early stopping check
             if patience_counter >= patience or  train_accuracy ==1.00:
-                print(f"{Colors.YELLOW} Early stopping.{Colors.ENDC}")
+                print("\033[K" +f"{Colors.YELLOW} Early stopping.{Colors.ENDC}")
                 break
 
             # Update weights if there were failures
@@ -3723,17 +3677,19 @@ class DBNN(GPUDBNN):
             if self.save_plots:
                 # Reconstruct features from predictions
                 reconstructed_features = self.reconstruct_features(posteriors)
+                save_path=f"data/{self.dataset_name}/plots/epoch_{epoch+1}"
+                os.makedirs(save_path, exist_ok=True)
                 self._save_reconstruction_plots(
                     original_features=X_train.cpu().numpy(),
                     reconstructed_features=reconstructed_features.cpu().numpy(),
                     true_labels=y_train.cpu().numpy(),
-                    save_path=f"data/{self.dataset_name}/plots/{self.dataset_name}_epoch_{epoch+1}"
+                    save_path=save_path
                 )
 
 
         # Training complete
         epoch_pbar.close()
-        self._save_model_components()
+        #self._save_model_components()
         return self.current_W.cpu(), error_rates
 
     #---------------------------------Train InvertableDBNN on the fly ------------------------------------
@@ -3744,7 +3700,7 @@ class DBNN(GPUDBNN):
            config_path = os.path.join(load_dir, 'inverse_config.json')
 
            if not (os.path.exists(model_path) and os.path.exists(config_path)):
-               print(f"No saved inverse model found at {load_dir}")
+               print("\033[K" +f"No saved inverse model found at {load_dir}")
                return False
 
            model_state = torch.load(model_path, map_location=self.device, weights_only=True)
@@ -3778,11 +3734,11 @@ class DBNN(GPUDBNN):
            self.reconstruction_weight = model_state.get('reconstruction_weight', 0.5)
            self.feedback_strength = model_state.get('feedback_strength', 0.3)
 
-           print(f"Loaded inverse model from {load_dir}")
+           print("\033[K" +f"Loaded inverse model from {load_dir}")
            return True
 
        except Exception as e:
-           print(f"Error loading inverse model: {str(e)}")
+           print("\033[K" +f"Error loading inverse model: {str(e)}")
            traceback.print_exc()
            return False
 
@@ -3925,28 +3881,28 @@ class DBNN(GPUDBNN):
         n_correct = correct_mask.sum()
 
         # Print basic metrics with colors
-        print(f"{Colors.BOLD}{Colors.BLUE}Detailed Classification Analysis:{Colors.ENDC}")
-        print(f"{Colors.BOLD}Total samples:{Colors.ENDC} {Colors.YELLOW}{n_total:,}{Colors.ENDC}")
+        print("\033[K" +f"{Colors.BOLD}{Colors.BLUE}Detailed Classification Analysis:{Colors.ENDC}")
+        print("\033[K" +f"{Colors.BOLD}Total samples:{Colors.ENDC} {Colors.YELLOW}{n_total:,}{Colors.ENDC}")
 
         # Color code for correctly classified
         correct_color = Colors.GREEN if (n_correct/n_total) >= 0.9 else \
                        Colors.YELLOW if (n_correct/n_total) >= 0.7 else \
                        Colors.BLUE
-        print(f"{Colors.BOLD}Correctly classified:{Colors.ENDC} {correct_color}{n_correct:,}{Colors.ENDC}")
+        print("\033[K" +f"{Colors.BOLD}Correctly classified:{Colors.ENDC} {correct_color}{n_correct:,}{Colors.ENDC}")
 
         # Color code for incorrectly classified
         incorrect = n_total - n_correct
         incorrect_color = Colors.GREEN if (incorrect/n_total) <= 0.1 else \
                          Colors.YELLOW if (incorrect/n_total) <= 0.3 else \
                          Colors.RED
-        print(f"{Colors.BOLD}Incorrectly classified:{Colors.ENDC} {incorrect_color}{incorrect:,}{Colors.ENDC}")
+        print("\033[K" +f"{Colors.BOLD}Incorrectly classified:{Colors.ENDC} {incorrect_color}{incorrect:,}{Colors.ENDC}")
 
         # Color code for raw accuracy
         accuracy = n_correct/n_total
         accuracy_color = Colors.GREEN if accuracy >= 0.9 else \
                         Colors.YELLOW if accuracy >= 0.7 else \
                         Colors.BLUE
-        print(f"{Colors.BOLD}Raw accuracy:{Colors.ENDC} {accuracy_color}{accuracy:.4%}{Colors.ENDC}\n")
+        print("\033[K" +f"{Colors.BOLD}Raw accuracy:{Colors.ENDC} {accuracy_color}{accuracy:.4%}{Colors.ENDC}\n")
 
         # Print confusion matrix with colors
         self.print_colored_confusion_matrix(true_labels_array, pred_labels,header="Test data")
@@ -3986,7 +3942,7 @@ class DBNN(GPUDBNN):
                         for col, val in X.iloc[idx].items():
                             f.write(f"{col}: {val}\n")
 
-        print(f"Detailed analysis saved to {analysis_file}")
+        print("\033[K" +f"Detailed analysis saved to {analysis_file}")
 
 #------------------------------------------------------------End of PP code ---------------------------------------------------
     def _compute_pairwise_likelihood(self, dataset, labels, feature_dims):
@@ -4066,7 +4022,7 @@ class DBNN(GPUDBNN):
         DEBUG.log(f" Remaining features: {len(df_filtered.columns)}")
 
         if len(df_filtered.columns) == 0:
-            print("[WARNING] All features were removed! Reverting to original features with warnings.")
+            print("\033[K" +"[WARNING] All features were removed! Reverting to original features with warnings.")
             return df.copy()
 
         return df_filtered
@@ -4229,7 +4185,7 @@ class DBNN(GPUDBNN):
 
             # If this is a fresh training round, reset to the best round's initial conditions
             if self.best_round_initial_conditions is not None:
-                print("Starting fresh training with best round's initial conditions")
+                print("\033[K" + "Starting fresh training with best round's initial conditions", end='\r', flush=True)
                 self.current_W = self.best_round_initial_conditions['weights'].clone()
                 self.likelihood_params = self.best_round_initial_conditions['likelihood_params']
                 self.feature_pairs = self.best_round_initial_conditions['feature_pairs']
@@ -4300,83 +4256,61 @@ class DBNN(GPUDBNN):
             self._save_categorical_encoders()
 
             # Make predictions on the entire dataset
-            print(f"{Colors.YELLOW}Generating predictions for the entire dataset{Colors.ENDC}")
+            print("\033[K" + f"{Colors.YELLOW}Generating predictions for the entire dataset{Colors.ENDC}", end='\r', flush=True)
             X_all = torch.cat([X_train, X_test], dim=0)
             y_all = torch.cat([y_train, y_test], dim=0)
             all_predictions = self.predict(X_all, batch_size=batch_size)
+            # Ensure all tensors are on the same device (GPU)
+            all_pr = all_predictions.to(self.device)  # Move predictions to GPU
+            y_all_pr = y_all.to(self.device)  # Ensure y_all is on GPU (though it likely already is)
+
+            combined_accuracy = len(X_all[y_all_pr == all_pr]) / len(X_all)
+            if combined_accuracy > self.best_combined_accuracy:
+                print("\033[K" + f"{Colors.RED}---------------------------------------------------------------------------------------{Colors.ENDC}")
+                print("\033[K" + f"{Colors.GREEN}The best combined accuracy has improved from {self.best_combined_accuracy} to {combined_accuracy}{Colors.ENDC}")
+                print("\033[K" + f"{Colors.RED}---------------------------------------------------------------------------------------{Colors.ENDC}")
+                self.best_combined_accuracy = combined_accuracy
+                self._save_model_components()
+                self._save_best_weights()
 
             # Generate detailed predictions for the entire dataset
+            print("\033[K" + "Computing detailed predictions for the whole data", end='\r', flush=True)
             all_results = self._generate_detailed_predictions(self.data, all_predictions, y_all)
-
-            # Save results if path is provided
-            if save_path:
-                # Save all predictions
-                #all_results.to_csv(f"{save_path}/all_predictions.csv", index=False)
-
-                # Save metadata
-                metadata = {
-                    'rejected_columns': self.high_cardinality_columns,
-                    'feature_columns': self.feature_columns,
-                    'target_column': self.target_column,
-                    'preprocessing_details': {
-                        'cardinality_threshold': self.cardinality_threshold,
-                        'cardinality_tolerance': self.cardinality_tolerance,
-                        'categorical_columns': list(self.categorical_encoders.keys())
-                    }
-                }
-                with open(f"{save_path}/metadata.json", 'w') as f:
-                    json.dump(metadata, f, indent=4)
-
-            # Calculate metrics for test set
-            y_test_cpu = y_test.cpu().numpy()
-            y_pred_cpu = all_predictions[self.test_indices].cpu().numpy()
-
-            # Convert numerical labels back to original classes
-            y_test_labels = self.label_encoder.inverse_transform(y_test_cpu)
-            y_pred_labels = self.label_encoder.inverse_transform(y_pred_cpu)
-
-            # Prepare results
-            results = {
-                'all_predictions': all_results,
-                'metadata': metadata,
-                'classification_report': classification_report(y_test_labels, y_pred_labels),
-                'confusion_matrix': confusion_matrix(y_test_labels, y_pred_labels),
-                'error_rates': error_rates,
-                'test_accuracy': (y_pred_cpu == y_test_cpu).mean()
-            }
-
-            print(f"Test Accuracy: {results['test_accuracy']:.4f}")
-            self._save_model_components()
-
 
             # Extract predictions for training and test data using stored indices
-            y_train_pred = all_predictions[self.train_indices].cpu().numpy()
-            y_test_pred = all_predictions[self.test_indices].cpu().numpy()
+            y_train_pred = all_predictions[:len(y_train)]  # Predictions for training data
+            y_test_pred = all_predictions[len(y_train):]   # Predictions for test data
 
-            # Generate detailed predictions for the entire dataset
-            all_results = self._generate_detailed_predictions(self.data, all_predictions, y_all)
             # Save training predictions
-            train_results = self._generate_detailed_predictions(
-                self.data.iloc[self.train_indices],  # Subset of data for training
-                y_train_pred,  # Predictions for training data
-                y_train.cpu().numpy()  # True labels for training data
-            )
+            print("\033[K" + "Saving Train predictions", end='\r', flush=True)
+            train_results = all_results.iloc[self.train_indices]
             train_results.to_csv(f"{save_path}/train_predictions.csv", index=False)
 
             # Save test predictions
-            test_results = self._generate_detailed_predictions(
-                self.data.iloc[self.test_indices],  # Subset of data for testing
-                y_test_pred,  # Predictions for test data
-                y_test.cpu().numpy()  # True labels for test data
-            )
+            print("\033[K" + "Saving Test predictions", end='\r', flush=True)
+            test_results = all_results.iloc[self.test_indices]
             test_results.to_csv(f"{save_path}/test_predictions.csv", index=False)
 
             # Save results if path is provided
             if save_path:
                 # Save all predictions
+                print("\033[K" + "Saving Combined predictions", end='\r', flush=True)
                 all_results.to_csv(f"{save_path}/combined_predictions.csv", index=False)
+                # Filter failed examples (where predicted class != true class)
+                failed_examples = all_results[all_results['predicted_class'] != all_results['true_class']]
 
+                # Filter passed examples (where predicted class == true class)
+                passed_examples = all_results[all_results['predicted_class'] == all_results['true_class']]
+
+                # Save failed examples
+                print("\033[K" + "Saving Failed examples", end='\r', flush=True)
+                failed_examples.to_csv(f"{save_path}/failed_examples.csv", index=False)
+
+                # Save passed examples
+                print("\033[K" + "Saving Passed examples", end='\r', flush=True)
+                passed_examples.to_csv(f"{save_path}/passed_examples.csv", index=False)
                 # Save metadata
+                print("\033[K" + "Saving Metadata", end='\r', flush=True)
                 metadata = {
                     'rejected_columns': self.high_cardinality_columns,
                     'feature_columns': self.feature_columns,
@@ -4401,6 +4335,7 @@ class DBNN(GPUDBNN):
             y_train_pred_labels = self.label_encoder.inverse_transform(y_train_pred)
 
             # Prepare results
+            print("\033[K" + "Preparing results of training", end='\r', flush=True)
             results = {
                 'all_predictions': all_results,
                 'train_predictions': train_results,
@@ -4409,16 +4344,12 @@ class DBNN(GPUDBNN):
                 'classification_report': classification_report(y_test_labels, y_test_pred_labels),
                 'confusion_matrix': confusion_matrix(y_test_labels, y_test_pred_labels),
                 'error_rates': error_rates,
-                'test_accuracy': (y_test_pred == y_test_cpu).mean(),
-                'train_accuracy': (y_train_pred == y_train_cpu).mean()
+                'test_accuracy': (np.asarray(y_test_pred) ==np.asarray(y_test_cpu)).astype(float).mean().item(),  # Convert to float before mean
+                'train_accuracy': (np.asarray(y_train_pred) == np.asarray(y_train_cpu)).astype(float).mean().item()  # Convert to float before mean
             }
 
-            print(f"Training Accuracy: {results['train_accuracy']:.4f}")
-            print(f"Test Accuracy: {results['test_accuracy']:.4f}")
-            self._save_model_components()
-
             # Generate point-colored confusion matrices for train, test, and combined data
-            print(f"{Colors.BOLD}Generating Confusion Matrices:{Colors.ENDC}")
+            print("\033[K" + f"{Colors.BOLD}Generating Confusion Matrices:{Colors.ENDC}", end='\r', flush=True)
 
             # Confusion matrix for training data
             self.print_colored_confusion_matrix(y_train_cpu, y_train_pred, header="Training Data")
@@ -4431,8 +4362,6 @@ class DBNN(GPUDBNN):
             self.print_colored_confusion_matrix(y_all_cpu, all_predictions.cpu().numpy(), header="Combined Data")
 
             return results
-
-
 
         except Exception as e:
             DEBUG.log(f"Error in fit_predict: {str(e)}")
@@ -4497,9 +4426,9 @@ class DBNN(GPUDBNN):
                         for column, mapping in data.items()
                     }
 
-                print(f"Loaded categorical encoders from {encoders_file}", end="\r", flush=True)
+                print("\033[K" +f"Loaded categorical encoders from {encoders_file}", end="\r", flush=True)
             except Exception as e:
-                print(f"Warning: Failed to load categorical encoders: {str(e)}")
+                print("\033[K" +f"Warning: Failed to load categorical encoders: {str(e)}")
                 self.categorical_encoders = {}
 
     def _encode_categorical_features(self, df: pd.DataFrame, is_training: bool = True):
@@ -4597,13 +4526,13 @@ class DBNN(GPUDBNN):
                 all_probabilities.append(batch_probs.cpu().numpy())
 
             except Exception as e:
-                print(f"Error computing probabilities for batch {i}: {str(e)}")
+                print("\033[K" +f"Error computing probabilities for batch {i}: {str(e)}")
                 return None
 
         if all_probabilities:
             all_probabilities = np.vstack(all_probabilities)
         else:
-            print("No probabilities were computed successfully", end="\r", flush=True)
+            print("\033[K" +"No probabilities were computed successfully", end="\r", flush=True)
             return None
 
         # Ensure we're only using valid class indices
@@ -4612,7 +4541,7 @@ class DBNN(GPUDBNN):
 
         # Verify probability array shape matches number of classes
         if all_probabilities.shape[1] != n_classes:
-            print(f"Warning: Probability array shape ({all_probabilities.shape}) doesn't match number of classes ({n_classes})")
+            print("\033[K" +f"Warning: Probability array shape ({all_probabilities.shape}) doesn't match number of classes ({n_classes})")
             # Adjust probabilities array if necessary
             if all_probabilities.shape[1] > n_classes:
                 all_probabilities = all_probabilities[:, :n_classes]
@@ -4637,7 +4566,7 @@ class DBNN(GPUDBNN):
         # Save the predictions file in the new directory
         output_path = os.path.join(output_dir, output_file)
         result_df.to_csv(output_path, index=False)
-        print(f"Saved predictions to {output_path}", end="\r", flush=True)
+        print("\033[K" +f"Saved predictions to {output_path}", end="\r", flush=True)
 
         if true_labels is not None:
             # Verification analysis
@@ -4680,8 +4609,8 @@ class DBNN(GPUDBNN):
         with open(components_file, 'wb') as f:
             pickle.dump(components, f)
 
-        print(f"Saved model components to {components_file}", end="\r", flush=True)
-        print(f"[DEBUG] File size after save: {os.path.getsize(components_file)} bytes", end="\r", flush=True)
+        print("\033[K" +f"Saved model components to {components_file}")
+        print("\033[K" +f"[DEBUG] File size after save: {os.path.getsize(components_file)} bytes", end="\r", flush=True)
         return True
 
 
@@ -4689,8 +4618,8 @@ class DBNN(GPUDBNN):
         """Load all model components"""
         components_file = self._get_model_components_filename()
         if os.path.exists(components_file):
-            print(f"[DEBUG] Loading model components from {components_file}", end="\r", flush=True)
-            print(f"[DEBUG] File size: {os.path.getsize(components_file)} bytes", end="\r", flush=True)
+            print("\033[K" +f"[DEBUG] Loading model components from {components_file}", end="\r", flush=True)
+            print("\033[K" +f"[DEBUG] File size: {os.path.getsize(components_file)} bytes", end="\r", flush=True)
             with open(components_file, 'rb') as f:
                 components = pickle.load(f)
                 self.label_encoder.classes_ = components['target_classes']
@@ -4705,10 +4634,10 @@ class DBNN(GPUDBNN):
                 self.n_bins_per_dim = components.get('n_bins_per_dim', 20)
                 self.bin_edges = components.get('bin_edges')  # Load bin_edges
                 self.gaussian_params = components.get('gaussian_params')  # Load gaussian_params
-                print(f"Loaded model components from {components_file}", end="\r", flush=True)
+                print("\033[K" +f"Loaded model components from {components_file}", end="\r", flush=True)
                 return True
         else:
-            print(f"[DEBUG] Model components file not found: {components_file}", end="\r", flush=True)
+            print("\033[K" +f"[DEBUG] Model components file not found: {components_file}", end="\r", flush=True)
         return False
 
 
@@ -4721,7 +4650,7 @@ class DBNN(GPUDBNN):
             components_loaded = self._load_model_components()
 
             if not (weights_loaded and components_loaded):
-                print("Complete model not found. Training required.", end="\r", flush=True)
+                print("\033[K" +"Complete model not found. Training required.", end="\r", flush=True)
                 results = self.fit_predict(batch_size=batch_size)
                 return results
 
@@ -4731,7 +4660,7 @@ class DBNN(GPUDBNN):
 
             # Explicitly use best weights for prediction
             if self.best_W is None:
-                print("No best weights found. Training required.", end="\r", flush=True)
+                print("\033[K" +"No best weights found. Training required.", end="\r", flush=True)
                 results = self.fit_predict(batch_size=batch_size)
                 return results
 
@@ -4750,7 +4679,7 @@ class DBNN(GPUDBNN):
                 X_tensor = self._preprocess_data(X, is_training=False)
 
                 # Make predictions
-                print(f"{Colors.BLUE}Predctions for saving data{Colors.ENDC}", end="\r", flush=True)
+                print("\033[K" +f"{Colors.BLUE}Predctions for saving data{Colors.ENDC}", end="\r", flush=True)
                 predictions = self.predict(X_tensor, batch_size=batch_size)
 
                 # Save predictions and metrics
@@ -4763,14 +4692,14 @@ class DBNN(GPUDBNN):
                 self.current_W = temp_W
 
         except Exception as e:
-            print(f"Error during prediction process: {str(e)}")
-            print("Falling back to training pipeline...")
+            print("\033[K" +f"Error during prediction process: {str(e)}")
+            print("\033[K" +"Falling back to training pipeline...")
             history = self.adaptive_fit_predict(max_rounds=self.max_epochs, batch_size=batch_size)
             results = self.fit_predict(batch_size=batch_size)
             return results
 
 
-#--------------------------------------------------Class Ends ----------------------------------------------------------
+#--------------------------------------------------Class Ends ---------------------------------------------------
 
 def run_gpu_benchmark(dataset_name: str, model=None, batch_size: int = 32):
     """Run benchmark using GPU-optimized implementation"""
